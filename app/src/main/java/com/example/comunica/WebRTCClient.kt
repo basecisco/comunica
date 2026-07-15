@@ -10,6 +10,7 @@ class WebRTCClient(
     private val rootEglBase: EglBase = EglBase.create()
     private var peerConnectionFactory: PeerConnectionFactory
     private var peerConnection: PeerConnection? = null
+    private var localAudioTrack: AudioTrack? = null
     private var dataChannel: DataChannel? = null
     private var onMessageReceived: ((String) -> Unit)? = null
 
@@ -17,6 +18,11 @@ class WebRTCClient(
         val options = PeerConnectionFactory.InitializationOptions.builder(context)
             .createInitializationOptions()
         PeerConnectionFactory.initialize(options)
+
+        // Configura o áudio do sistema para modo comunicação
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+        audioManager.isSpeakerphoneOn = true
 
         val factoryOptions = PeerConnectionFactory.Options()
         peerConnectionFactory = PeerConnectionFactory.builder()
@@ -33,6 +39,16 @@ class WebRTCClient(
     fun initPeerConnection(iceServers: List<PeerConnection.IceServer>) {
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers)
         peerConnection = peerConnectionFactory.createPeerConnection(rtcConfig, observer)
+        startLocalAudio()
+    }
+
+    private fun startLocalAudio() {
+        android.util.Log.d("ComunicaDebug", "WebRTC: Criando fonte de áudio local...")
+        val audioSource = peerConnectionFactory.createAudioSource(MediaConstraints())
+        localAudioTrack = peerConnectionFactory.createAudioTrack("AUDIO_TRACK_ID", audioSource)
+        localAudioTrack?.setEnabled(true)
+        peerConnection?.addTrack(localAudioTrack)
+        android.util.Log.d("ComunicaDebug", "WebRTC: Track de áudio local adicionada ao PeerConnection.")
     }
 
     fun createDataChannel() {
@@ -124,5 +140,13 @@ class WebRTCClient(
 
     fun addIceCandidate(candidate: IceCandidate) {
         peerConnection?.addIceCandidate(candidate)
+    }
+
+    fun closeConnection() {
+        dataChannel?.close()
+        peerConnection?.close()
+        peerConnection = null
+        localAudioTrack = null
+        android.util.Log.d("ComunicaDebug", "WebRTC: Conexão encerrada localmente.")
     }
 }
