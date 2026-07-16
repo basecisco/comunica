@@ -114,12 +114,28 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        val prefs = getSharedPreferences("comunica_prefs", Context.MODE_PRIVATE)
+        val savedName = prefs.getString("user_name", "")
+        val savedEmail = prefs.getString("user_email", "")
+
+        if (!savedName.isNullOrBlank()) {
+            myName = savedName
+            myEmail = savedEmail ?: ""
+            initWebRTC()
+        }
+
         setContent {
-            var loggedIn by remember { mutableStateOf(false) }
+            var loggedIn by remember { mutableStateOf(!savedName.isNullOrBlank()) }
             
             ComunicaTheme {
                 if (!loggedIn) {
                     LoginScreen { name, email ->
+                        prefs.edit().apply {
+                            putString("user_name", name)
+                            putString("user_email", email)
+                            apply()
+                        }
                         myName = name
                         myEmail = email
                         loggedIn = true
