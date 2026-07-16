@@ -44,64 +44,76 @@ class MainActivity : ComponentActivity() {
     private var signalingClient: SignalingClient? = null
     private var webRTCClient: WebRTCClient? = null
     private var myId: String = ""
+    private var myName: String = ""
+    private var myEmail: String = ""
     private var currentTargetId: String? = null
     
     private val messagesState = mutableStateListOf<ChatMessage>()
-    private val onlineUsersState = mutableStateListOf<String>()
+    private val onlineUsersState = mutableStateListOf<UserInfo>()
     
-    private val incomingCallFromState = mutableStateOf<String?>(null)
+    private val incomingCallFromState = mutableStateOf<UserInfo?>(null)
     private var remoteOfferSdp: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        initWebRTC()
         setContent {
+            var loggedIn by remember { mutableStateOf(false) }
+            
             ComunicaTheme {
-                MainScreen(
-                    myId = myId,
-                    onlineUsers = onlineUsersState,
-                    messagesList = messagesState,
-                    incomingCallFrom = incomingCallFromState.value,
-                    onAcceptCall = { from ->
-                        val sdp = remoteOfferSdp
-                        if (sdp != null) {
-                            currentTargetId = from
-                            webRTCClient?.setRemoteDescription(SessionDescription(SessionDescription.Type.OFFER, sdp))
-                            webRTCClient?.createAnswer { answerSdp ->
-                                signalingClient?.sendAnswer(from, answerSdp.description)
-                            }
-                        }
-                        incomingCallFromState.value = null
-                        remoteOfferSdp = null
-                    },
-                    onRejectCall = { from ->
-                        signalingClient?.endCall(from)
-                        incomingCallFromState.value = null
-                        remoteOfferSdp = null
-                    },
-                    onStartCall = { targetId, isVideo ->
-                        if (webRTCClient != null && signalingClient != null) {
-                            currentTargetId = targetId
-                            webRTCClient?.createOffer { offerSdp ->
-                                signalingClient?.sendOffer(targetId, offerSdp.description)
-                            }
-                        }
-                    },
-                    onSendMessage = { targetId, msg ->
-                        webRTCClient?.sendMessage(msg)
-                    },
-                    onHangup = { targetId ->
-                        webRTCClient?.closeConnection()
-                        signalingClient?.endCall(targetId)
-                        currentTargetId = null
-                        initWebRTC(isRestart = true)
-                    },
-                    onSpeechServiceAction = { isListening ->
-                        if (isListening) speechService?.startListening()
-                        else speechService?.stopListening()
+                if (!loggedIn) {
+                    LoginScreen { name, email ->
+                        myName = name
+                        myEmail = email
+                        loggedIn = true
+                        initWebRTC()
                     }
-                )
+                } else {
+                    MainScreen(
+                        myId = myId,
+                        onlineUsers = onlineUsersState,
+                        messagesList = messagesState,
+                        incomingCallFrom = incomingCallFromState.value,
+                        onAcceptCall = { from ->
+                            val sdp = remoteOfferSdp
+                            if (sdp != null) {
+                                currentTargetId = from.id
+                                webRTCClient?.setRemoteDescription(SessionDescription(SessionDescription.Type.OFFER, sdp))
+                                webRTCClient?.createAnswer { answerSdp ->
+                                    signalingClient?.sendAnswer(from.id, answerSdp.description)
+                                }
+                            }
+                            incomingCallFromState.value = null
+                            remoteOfferSdp = null
+                        },
+                        onRejectCall = { from ->
+                            signalingClient?.endCall(from.id)
+                            incomingCallFromState.value = null
+                            remoteOfferSdp = null
+                        },
+                        onStartCall = { target, isVideo ->
+                            if (webRTCClient != null && signalingClient != null) {
+                                currentTargetId = target.id
+                                webRTCClient?.createOffer { offerSdp ->
+                                    signalingClient?.sendOffer(target.id, offerSdp.description)
+                                }
+                            }
+                        },
+                        onSendMessage = { target, msg ->
+                            webRTCClient?.sendMessage(msg)
+                        },
+                        onHangup = { target ->
+                            webRTCClient?.closeConnection()
+                            signalingClient?.endCall(target.id)
+                            currentTargetId = null
+                            initWebRTC(isRestart = true)
+                        },
+                        onSpeechServiceAction = { isListening ->
+                            if (isListening) speechService?.startListening()
+                            else speechService?.stopListening()
+                        }
+                    )
+                }
             }
         }
     }
@@ -142,7 +154,8 @@ class MainActivity : ComponentActivity() {
 
             webRTCClient?.setOnMessageReceivedListener { message ->
                 runOnUiThread {
-                    messagesState.add(ChatMessage("Remoto", message))
+                    val senderName = onlineUsersState.find { it.id == currentTargetId }?.name ?: "Remoto"
+                    messagesState.add(ChatMessage(senderName, message))
                 }
             }
             
@@ -154,14 +167,16 @@ class MainActivity : ComponentActivity() {
                 override fun onConnectionEstablished(id: String) {
                     myId = id
                     Log.d("ComunicaDebug", "Conectado como: $myId. Entrando no lobby...")
-                    signalingClient?.joinRoom("sala-padrao")
+                    signalingClient?.joinRoom("sala-padrao", myName, myEmail)
                 }
 
-                override fun onOfferReceived(from: String, description: String) {
+                override fun onOfferReceived(fromId: String, description: String) {
                     runOnUiThread {
-                        Log.d("ComunicaDebug", "Oferta recebida de: $from. Notificando usuário...")
+                        Log.d("ComunicaDebug", "Oferta recebida de: $fromId. Notificando usuário...")
                         remoteOfferSdp = description
-                        incomingCallFromState.value = from
+                        // Tenta encontrar o nome do usuário na lista online
+                        val user = onlineUsersState.find { it.id == fromId } ?: UserInfo(fromId, "Usuário " + fromId.take(4), "")
+                        incomingCallFromState.value = user
                     }
                 }
 
@@ -177,7 +192,7 @@ class MainActivity : ComponentActivity() {
                     ))
                 }
 
-                override fun onUserListUpdated(users: List<String>) {
+                override fun onUserListUpdated(users: List<UserInfo>) {
                     runOnUiThread {
                         onlineUsersState.clear()
                         onlineUsersState.addAll(users)
@@ -201,19 +216,19 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(
     myId: String,
-    onlineUsers: List<String>,
+    onlineUsers: List<UserInfo>,
     messagesList: MutableList<ChatMessage>,
-    incomingCallFrom: String?,
-    onAcceptCall: (String) -> Unit,
-    onRejectCall: (String) -> Unit,
-    onStartCall: (String, Boolean) -> Unit,
-    onSendMessage: (String, String) -> Unit,
-    onHangup: (String) -> Unit,
+    incomingCallFrom: UserInfo?,
+    onAcceptCall: (UserInfo) -> Unit,
+    onRejectCall: (UserInfo) -> Unit,
+    onStartCall: (UserInfo, Boolean) -> Unit,
+    onSendMessage: (UserInfo, String) -> Unit,
+    onHangup: (UserInfo) -> Unit,
     onSpeechServiceAction: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     var hasPermissions by remember { mutableStateOf(false) }
-    var selectedUser by remember { mutableStateOf<String?>(null) }
+    var selectedUser by remember { mutableStateOf<UserInfo?>(null) }
     
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -270,11 +285,61 @@ fun MainScreen(
 }
 
 @Composable
-fun IncomingCallDialog(from: String, onAccept: () -> Unit, onReject: () -> Unit) {
+fun LoginScreen(onLogin: (String, String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(Icons.Default.Forum, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(16.dp))
+        Text("Bem-vindo ao Comunica", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("Entre com seu nome para começar", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.outline)
+        
+        Spacer(Modifier.height(32.dp))
+        
+        OutlinedTextField(
+            value = name, 
+            onValueChange = { name = it }, 
+            label = { Text("Nome de usuário") }, 
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp)
+        )
+        
+        Spacer(Modifier.height(16.dp))
+        
+        OutlinedTextField(
+            value = email, 
+            onValueChange = { email = it }, 
+            label = { Text("Email (opcional)") }, 
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp)
+        )
+        
+        Spacer(Modifier.height(32.dp))
+        
+        Button(
+            onClick = { if (name.isNotBlank()) onLogin(name, email) },
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            enabled = name.isNotBlank(),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Text("Entrar")
+        }
+    }
+}
+
+@Composable
+fun IncomingCallDialog(from: UserInfo, onAccept: () -> Unit, onReject: () -> Unit) {
     AlertDialog(
         onDismissRequest = { },
         title = { Text("Chamada Recebida", fontWeight = FontWeight.Bold) },
-        text = { Text("Usuário ${from.take(8)} está ligando para você...") },
+        text = { Text("${from.name} está ligando para você...") },
         confirmButton = {
             Button(onClick = onAccept, colors = ButtonDefaults.buttonColors(containerColor = Color.Green)) {
                 Text("Atender", color = Color.White)
@@ -290,11 +355,11 @@ fun IncomingCallDialog(from: String, onAccept: () -> Unit, onReject: () -> Unit)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun UserListScreen(users: List<String>, onUserClick: (String) -> Unit) {
+fun UserListScreen(users: List<UserInfo>, onUserClick: (UserInfo) -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Comunica (WhatsApp Style)", fontWeight = FontWeight.Bold) },
+                title = { Text("Comunica", fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
             )
         }
@@ -307,16 +372,16 @@ fun UserListScreen(users: List<String>, onUserClick: (String) -> Unit) {
                 color = MaterialTheme.colorScheme.primary
             )
             LazyColumn {
-                items(users) { userId ->
+                items(users) { user ->
                     ListItem(
-                        headlineContent = { Text("Usuário: ${userId.take(8)}") },
-                        supportingContent = { Text("Disponível para conversa") },
+                        headlineContent = { Text(user.name, fontWeight = FontWeight.SemiBold) },
+                        supportingContent = { Text("ID: ${user.id.take(8)}") },
                         leadingContent = {
                             Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
                                 Icon(Icons.Default.Person, contentDescription = null, tint = Color.White)
                             }
                         },
-                        modifier = Modifier.clickable { onUserClick(userId) }
+                        modifier = Modifier.clickable { onUserClick(user) }
                     )
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), thickness = 0.5.dp)
                 }
@@ -328,7 +393,7 @@ fun UserListScreen(users: List<String>, onUserClick: (String) -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CommunicationUI(
-    targetUser: String,
+    targetUser: UserInfo,
     messages: List<ChatMessage>,
     onBack: () -> Unit,
     onStartCall: (Boolean) -> Unit,
@@ -351,7 +416,7 @@ fun CommunicationUI(
                             Icon(Icons.Default.Person, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
                         }
                         Spacer(Modifier.width(8.dp))
-                        Text(targetUser.take(8), fontSize = 18.sp)
+                        Text(targetUser.name, fontSize = 18.sp)
                     }
                 },
                 actions = {
@@ -366,7 +431,7 @@ fun CommunicationUI(
             if (isCallActive) {
                 Box(modifier = Modifier.fillMaxWidth().height(200.dp).background(Color.Black)) {
                     VideoView(modifier = Modifier.align(Alignment.BottomEnd).size(100.dp, 140.dp).padding(8.dp))
-                    Text("Chamada em curso...", color = Color.White, modifier = Modifier.align(Alignment.Center))
+                    Text("Chamada com ${targetUser.name}...", color = Color.White, modifier = Modifier.align(Alignment.Center))
                     IconButton(
                         onClick = { onHangup(); isCallActive = false },
                         modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp).clip(CircleShape).background(Color.Red)
@@ -477,7 +542,7 @@ fun MainScreenPreview() {
         val messages = remember { mutableStateListOf<ChatMessage>() }
         MainScreen(
             myId = "minha-id",
-            onlineUsers = listOf("user1", "user2", "user3"),
+            onlineUsers = listOf(UserInfo("1", "User One", "one@test.com")),
             messagesList = messages,
             incomingCallFrom = null,
             onAcceptCall = {},
