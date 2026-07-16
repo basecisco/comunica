@@ -1,6 +1,11 @@
 package com.example.comunica
 
 import android.Manifest
+import android.content.Context
+import android.media.AudioManager
+import android.media.Ringtone
+import android.media.RingtoneManager
+import android.media.ToneGenerator
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -54,6 +59,58 @@ class MainActivity : ComponentActivity() {
     private val incomingCallFromState = mutableStateOf<UserInfo?>(null)
     private var remoteOfferSdp: String? = null
 
+    private var ringtone: Ringtone? = null
+    private var toneGenerator: ToneGenerator? = null
+
+    private fun startRingtone() {
+        try {
+            val notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            ringtone = RingtoneManager.getRingtone(applicationContext, notification)
+            ringtone?.play()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun stopRingtone() {
+        runOnUiThread {
+            try {
+                ringtone?.stop()
+                ringtone = null
+                // Força o modo de comunicação após parar o toque
+                val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                audioManager.isSpeakerphoneOn = true
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun startRingbackTone() {
+        if (toneGenerator == null) {
+            toneGenerator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 100)
+        }
+        // TONE_SUP_RINGTONE é o som clássico de "chamando"
+        toneGenerator?.startTone(ToneGenerator.TONE_SUP_RINGTONE)
+    }
+
+    private fun stopRingbackTone() {
+        runOnUiThread {
+            try {
+                toneGenerator?.stopTone()
+                toneGenerator?.release()
+                toneGenerator = null
+                // Força o modo de comunicação após parar o tom
+                val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                audioManager.isSpeakerphoneOn = true
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -75,6 +132,7 @@ class MainActivity : ComponentActivity() {
                         messagesList = messagesState,
                         incomingCallFrom = incomingCallFromState.value,
                         onAcceptCall = { from ->
+                            stopRingtone()
                             val sdp = remoteOfferSdp
                             if (sdp != null) {
                                 currentTargetId = from.id
@@ -87,11 +145,13 @@ class MainActivity : ComponentActivity() {
                             remoteOfferSdp = null
                         },
                         onRejectCall = { from ->
+                            stopRingtone()
                             signalingClient?.endCall(from.id)
                             incomingCallFromState.value = null
                             remoteOfferSdp = null
                         },
                         onStartCall = { target, isVideo ->
+                            startRingbackTone()
                             if (webRTCClient != null && signalingClient != null) {
                                 currentTargetId = target.id
                                 webRTCClient?.createOffer { offerSdp ->
@@ -103,6 +163,8 @@ class MainActivity : ComponentActivity() {
                             webRTCClient?.sendMessage(msg)
                         },
                         onHangup = { target ->
+                            stopRingbackTone()
+                            stopRingtone()
                             webRTCClient?.closeConnection()
                             signalingClient?.endCall(target.id)
                             currentTargetId = null
@@ -173,6 +235,7 @@ class MainActivity : ComponentActivity() {
                 override fun onOfferReceived(fromId: String, description: String) {
                     runOnUiThread {
                         Log.d("ComunicaDebug", "Oferta recebida de: $fromId. Notificando usuário...")
+                        startRingtone()
                         remoteOfferSdp = description
                         // Tenta encontrar o nome do usuário na lista online
                         val user = onlineUsersState.find { it.id == fromId } ?: UserInfo(fromId, "Usuário " + fromId.take(4), "")
@@ -181,6 +244,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onAnswerReceived(from: String, description: String) {
+                    stopRingbackTone()
                     webRTCClient?.setRemoteDescription(SessionDescription(SessionDescription.Type.ANSWER, description))
                 }
 
@@ -202,6 +266,8 @@ class MainActivity : ComponentActivity() {
                 override fun onCallEnded(from: String) {
                     runOnUiThread {
                         Log.d("ComunicaDebug", "Chamada encerrada pelo remoto.")
+                        stopRingtone()
+                        stopRingbackTone()
                         webRTCClient?.closeConnection()
                         currentTargetId = null
                         initWebRTC(isRestart = true)

@@ -47,7 +47,7 @@ class WebRTCClient(
         val audioSource = peerConnectionFactory.createAudioSource(MediaConstraints())
         localAudioTrack = peerConnectionFactory.createAudioTrack("AUDIO_TRACK_ID", audioSource)
         localAudioTrack?.setEnabled(true)
-        peerConnection?.addTrack(localAudioTrack)
+        peerConnection?.addTrack(localAudioTrack, listOf("ARDAMS"))
         android.util.Log.d("ComunicaDebug", "WebRTC: Track de áudio local adicionada ao PeerConnection.")
     }
 
@@ -122,7 +122,10 @@ class WebRTCClient(
     }
 
     fun createAnswer(callback: (SessionDescription) -> Unit) {
-        val constraints = MediaConstraints()
+        val constraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+        }
         peerConnection?.createAnswer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription) {
                 peerConnection?.setLocalDescription(object : SdpObserver {
