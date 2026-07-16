@@ -375,7 +375,12 @@ fun UserListScreen(users: List<UserInfo>, onUserClick: (UserInfo) -> Unit) {
                 items(users) { user ->
                     ListItem(
                         headlineContent = { Text(user.name, fontWeight = FontWeight.SemiBold) },
-                        supportingContent = { Text("ID: ${user.id.take(8)}") },
+                        supportingContent = {
+                            Text(
+                                text = if (user.email.isNotBlank()) user.email else "ID: ${user.id.take(8)}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        },
                         leadingContent = {
                             Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
                                 Icon(Icons.Default.Person, contentDescription = null, tint = Color.White)
