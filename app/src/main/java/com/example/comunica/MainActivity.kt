@@ -20,8 +20,10 @@ import androidx.core.app.NotificationCompat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -38,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.text.font.FontWeight
@@ -45,6 +48,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import coil.compose.AsyncImage
 import com.example.comunica.ui.theme.ComunicaTheme
 import java.text.SimpleDateFormat
 import java.util.*
@@ -193,6 +197,7 @@ class MainActivity : ComponentActivity() {
                 startService(serviceIntent)
             }
             initWebRTC()
+            signalingClient?.joinRoom("sala-padrao", myName, myEmail, myPhotoUri)
             speechService = SpeechService(this) { transcription ->
                 runOnUiThread {
                     messagesState.add(ChatMessage(myName, transcription, isTranscription = true))
@@ -228,6 +233,7 @@ class MainActivity : ComponentActivity() {
                         }
                         loggedIn = true
                         initWebRTC()
+                        signalingClient?.joinRoom("sala-padrao", myName, myEmail, myPhotoUri)
                         speechService = SpeechService(this) { transcription ->
                             runOnUiThread {
                                 messagesState.add(ChatMessage(myName, transcription, isTranscription = true))
@@ -266,7 +272,7 @@ class MainActivity : ComponentActivity() {
                         myName = name
                         myEmail = email
                         myPhotoUri = photo
-                        signalingClient?.joinRoom("sala-padrao", myName, myEmail) // Atualiza no servidor
+                        signalingClient?.joinRoom("sala-padrao", myName, myEmail, myPhotoUri) // Atualiza no servidor
                         Toast.makeText(this@MainActivity, "Perfil atualizado", Toast.LENGTH_SHORT).show()
                     },
                     onAcceptCall = { from ->
@@ -383,7 +389,7 @@ class MainActivity : ComponentActivity() {
                 override fun onConnectionEstablished(id: String) {
                     myId = id
                     Log.d("ComunicaDebug", "Conectado como: $myId. Entrando no lobby...")
-                    signalingClient?.joinRoom("sala-padrao", myName, myEmail)
+                    signalingClient?.joinRoom("sala-padrao", myName, myEmail, myPhotoUri)
                 }
 
                 override fun onOfferReceived(fromId: String, description: String) {
@@ -391,7 +397,7 @@ class MainActivity : ComponentActivity() {
                         Log.d("ComunicaDebug", "Signaling: Oferta recebida de: $fromId")
                         startRingtone()
                         remoteOfferSdp = description
-                        val user = onlineUsersState.find { it.id == fromId } ?: UserInfo(fromId, "Usuário " + fromId.take(4), "")
+                        val user = onlineUsersState.find { it.id == fromId } ?: UserInfo(fromId, "Usuário " + fromId.take(4), "", "")
                         showIncomingCallNotification(user)
                         incomingCallFromState.value = user
                     }
@@ -506,6 +512,9 @@ fun MainScreen(
         val permissions = mutableListOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+            permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
+        } else {
+            permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
         permissionLauncher.launch(permissions.toTypedArray())
     }
@@ -576,6 +585,21 @@ fun ProfileEditScreen(
     var email by remember { mutableStateOf(currentEmail) }
     var photo by remember { mutableStateOf(currentPhoto) }
 
+    val context = LocalContext.current
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val takeFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION
+                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            photo = uri.toString()
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -591,13 +615,41 @@ fun ProfileEditScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Box(
-                modifier = Modifier.size(100.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
+                modifier = Modifier
+                    .size(120.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+                    .border(2.dp, MaterialTheme.colorScheme.primary, CircleShape)
+                    .clickable { 
+                        photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(60.dp), tint = Color.White)
+                if (photo.isNotEmpty()) {
+                    AsyncImage(
+                        model = photo,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.AddAPhoto, 
+                        contentDescription = null, 
+                        modifier = Modifier.size(40.dp), 
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
             
-            Spacer(Modifier.height(32.dp))
+            Text(
+                "Tocar para mudar foto", 
+                style = MaterialTheme.typography.labelSmall, 
+                modifier = Modifier.padding(top = 8.dp),
+                color = MaterialTheme.colorScheme.outline
+            )
+            
+            Spacer(Modifier.height(24.dp))
 
             OutlinedTextField(
                 value = name,
@@ -734,8 +786,23 @@ fun UserListScreen(
                             )
                         },
                         leadingContent = {
-                            Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.Person, contentDescription = null, tint = Color.White)
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primaryContainer),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (user.photo.isNotEmpty()) {
+                                    AsyncImage(
+                                        model = user.photo,
+                                        contentDescription = null,
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                } else {
+                                    Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                }
                             }
                         },
                         modifier = Modifier.clickable { onUserClick(user) }
@@ -771,8 +838,23 @@ fun CommunicationUI(
                 },
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(modifier = Modifier.size(32.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Person, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (targetUser.photo.isNotEmpty()) {
+                                AsyncImage(
+                                    model = targetUser.photo,
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            }
                         }
                         Spacer(Modifier.width(8.dp))
                         Text(targetUser.name, fontSize = 18.sp)
@@ -924,7 +1006,7 @@ fun MainScreenPreview() {
             myName = "Eu",
             myEmail = "eu@teste.com",
             myPhotoUri = "",
-            onlineUsers = listOf(UserInfo("1", "User One", "one@test.com")),
+            onlineUsers = listOf(UserInfo("1", "User One", "one@test.com", "")),
             messagesList = messages,
             incomingCallFrom = null,
             eglBaseContext = null,

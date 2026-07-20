@@ -6,7 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URISyntaxException
 
-data class UserInfo(val id: String, val name: String, val email: String)
+data class UserInfo(val id: String, val name: String, val email: String, val photo: String = "")
 
 class SignalingClient(
     private val serverUrl: String,
@@ -65,12 +65,13 @@ class SignalingClient(
                             users.add(UserInfo(
                                 id = userId,
                                 name = userElement.optString("name", "Unknown"),
-                                email = userElement.optString("email", "")
+                                email = userElement.optString("email", ""),
+                                photo = userElement.optString("photo", "")
                             ))
                         }
                     } else if (userElement is String) {
                         if (userElement != socket?.id()) {
-                            users.add(UserInfo(userElement, "Usuário " + userElement.take(4), ""))
+                            users.add(UserInfo(userElement, "Usuário " + userElement.take(4), "", ""))
                         }
                     }
                 }
@@ -95,11 +96,12 @@ class SignalingClient(
         }
     }
 
-    fun joinRoom(roomId: String, name: String, email: String) {
+    fun joinRoom(roomId: String, name: String, email: String, photo: String = "") {
         val data = JSONObject().apply {
             put("room", roomId)
             put("name", name)
             put("email", email)
+            put("photo", photo)
         }
         socket?.emit("join", data)
     }
