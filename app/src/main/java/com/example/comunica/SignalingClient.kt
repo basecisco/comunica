@@ -21,6 +21,7 @@ class SignalingClient(
         fun onIceCandidateReceived(from: String, candidate: JSONObject)
         fun onUserListUpdated(users: List<UserInfo>)
         fun onCallEnded(from: String)
+        fun onChatMessageReceived(from: String, message: String)
     }
 
     init {
@@ -81,6 +82,13 @@ class SignalingClient(
                 listener.onCallEnded(data.optString("from"))
             }
 
+            socket?.on("chat-message") { args ->
+                val data = args[0] as JSONObject
+                val from = data.optString("from")
+                val message = data.optString("message")
+                listener.onChatMessageReceived(from, message)
+            }
+
             socket?.connect()
         } catch (e: URISyntaxException) {
             e.printStackTrace()
@@ -129,6 +137,15 @@ class SignalingClient(
             put("from", socket?.id())
         }
         socket?.emit("end-call", data)
+    }
+
+    fun sendChatMessage(targetId: String, message: String) {
+        val data = JSONObject().apply {
+            put("target", targetId)
+            put("from", socket?.id())
+            put("message", message)
+        }
+        socket?.emit("chat-message", data)
     }
 
     fun disconnect() {

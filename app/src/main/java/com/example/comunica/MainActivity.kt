@@ -46,10 +46,17 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.comunica.ui.theme.ComunicaTheme
+import java.text.SimpleDateFormat
+import java.util.*
 import org.json.JSONObject
 import org.webrtc.*
 
-data class ChatMessage(val sender: String, val text: String, val isTranscription: Boolean = false)
+data class ChatMessage(
+    val sender: String,
+    val text: String,
+    val isTranscription: Boolean = false,
+    val timestamp: Long = System.currentTimeMillis()
+)
 
 class MainActivity : ComponentActivity() {
     private var speechService: SpeechService? = null
@@ -58,7 +65,7 @@ class MainActivity : ComponentActivity() {
     private var myId: String = ""
     private var myName: String = ""
     private var myEmail: String = ""
-    private var currentTargetId: String? = null
+    private var currentTargetId by mutableStateOf<String?>(null)
     
     private val messagesState = mutableStateListOf<ChatMessage>()
     private val onlineUsersState = mutableStateListOf<UserInfo>()
@@ -68,6 +75,16 @@ class MainActivity : ComponentActivity() {
 
     private var ringtone: Ringtone? = null
     private var toneGenerator: ToneGenerator? = null
+
+    private fun playNotificationSound() {
+        try {
+            val notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            val r = RingtoneManager.getRingtone(applicationContext, notification)
+            r.play()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
 
     private fun startRingtone() {
         try {
@@ -176,7 +193,13 @@ class MainActivity : ComponentActivity() {
             speechService = SpeechService(this) { transcription ->
                 runOnUiThread {
                     messagesState.add(ChatMessage(myName, transcription, isTranscription = true))
-                    webRTCClient?.sendMessage(transcription)
+                    if (webRTCClient?.isDataChannelOpen() == true) {
+                        webRTCClient?.sendMessage(transcription)
+                    } else {
+                        currentTargetId?.let { targetId ->
+                            signalingClient?.sendChatMessage(targetId, transcription)
+                        }
+                    }
                 }
             }
         }
@@ -205,18 +228,30 @@ class MainActivity : ComponentActivity() {
                         speechService = SpeechService(this) { transcription ->
                             runOnUiThread {
                                 messagesState.add(ChatMessage(myName, transcription, isTranscription = true))
-                                webRTCClient?.sendMessage(transcription)
+                                if (webRTCClient?.isDataChannelOpen() == true) {
+                                    webRTCClient?.sendMessage(transcription)
+                                } else {
+                                    currentTargetId?.let { targetId ->
+                                        signalingClient?.sendChatMessage(targetId, transcription)
+                                    }
+                                }
                             }
                         }
                     }
                 } else {
-                    MainScreen(
-                        myId = myId,
-                        onlineUsers = onlineUsersState,
-                        messagesList = messagesState,
-                        incomingCallFrom = incomingCallFromState.value,
-                        eglBaseContext = webRTCClient?.rootEglBase?.eglBaseContext,
-                        onAcceptCall = { from ->
+                MainScreen(
+                    myId = myId,
+                    myName = myName,
+                    onlineUsers = onlineUsersState,
+                    messagesList = messagesState,
+                    incomingCallFrom = incomingCallFromState.value,
+                    eglBaseContext = webRTCClient?.rootEglBase?.eglBaseContext,
+                    currentTargetId = currentTargetId,
+                    onUserSelected = { user ->
+                        currentTargetId = user.id
+                    },
+                    onBack = { currentTargetId = null },
+                    onAcceptCall = { from ->
                             stopRingtone()
                             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                             notificationManager.cancel(100)
@@ -249,7 +284,12 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onSendMessage = { target, msg ->
-                            webRTCClient?.sendMessage(msg)
+                            messagesState.add(ChatMessage("Eu: $myName", msg))
+                            if (webRTCClient?.isDataChannelOpen() == true) {
+                                webRTCClient?.sendMessage(msg)
+                            } else {
+                                signalingClient?.sendChatMessage(target.id, msg)
+                            }
                         },
                         onHangup = { target ->
                             stopRingbackTone()
@@ -291,6 +331,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onDataChannel(dc: DataChannel?) {
+                    Log.d("ComunicaDebug", "PeerConnection: onDataChannel recebido: ${dc?.label()}")
                     dc?.let { webRTCClient?.onRemoteDataChannel(it) }
                 }
 
@@ -312,6 +353,7 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     val senderName = onlineUsersState.find { it.id == currentTargetId }?.name ?: "Remoto"
                     messagesState.add(ChatMessage(senderName, message))
+                    playNotificationSound()
                 }
             }
             
@@ -328,7 +370,7 @@ class MainActivity : ComponentActivity() {
 
                 override fun onOfferReceived(fromId: String, description: String) {
                     runOnUiThread {
-                        Log.d("ComunicaDebug", "Oferta recebida de: $fromId. Notificando usuário...")
+                        Log.d("ComunicaDebug", "Signaling: Oferta recebida de: $fromId")
                         startRingtone()
                         remoteOfferSdp = description
                         val user = onlineUsersState.find { it.id == fromId } ?: UserInfo(fromId, "Usuário " + fromId.take(4), "")
@@ -338,11 +380,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onAnswerReceived(from: String, description: String) {
+                    Log.d("ComunicaDebug", "Signaling: Resposta recebida de: $from")
                     stopRingbackTone()
                     webRTCClient?.setRemoteDescription(SessionDescription(SessionDescription.Type.ANSWER, description))
                 }
 
                 override fun onIceCandidateReceived(from: String, candidate: JSONObject) {
+                    Log.d("ComunicaDebug", "Signaling: ICE Candidate recebido de: $from")
                     webRTCClient?.addIceCandidate(IceCandidate(
                         candidate.getString("sdpMid"),
                         candidate.getInt("sdpMLineIndex"),
@@ -370,6 +414,25 @@ class MainActivity : ComponentActivity() {
                         Toast.makeText(this@MainActivity, "Chamada encerrada", Toast.LENGTH_SHORT).show()
                     }
                 }
+
+                override fun onChatMessageReceived(from: String, message: String) {
+                    runOnUiThread {
+                        val sender = onlineUsersState.find { it.id == from }
+                        if (sender != null) {
+                            // Se não estivermos conversando com ninguém ou estivermos conversando com outra pessoa
+                            // mudamos o foco para quem enviou a mensagem
+                            if (currentTargetId != from) {
+                                currentTargetId = from
+                                // Precisamos atualizar o selectedUser no MainScreen. 
+                                // Como o MainScreen é um Composable, vamos usar um estado para controlar isso.
+                            }
+                            
+                            val senderName = sender.name
+                            messagesState.add(ChatMessage(senderName, message))
+                            playNotificationSound()
+                        }
+                    }
+                }
             })
         }
     }
@@ -391,10 +454,14 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(
     myId: String,
+    myName: String,
     onlineUsers: List<UserInfo>,
     messagesList: MutableList<ChatMessage>,
     incomingCallFrom: UserInfo?,
     eglBaseContext: EglBase.Context?,
+    currentTargetId: String?,
+    onUserSelected: (UserInfo) -> Unit,
+    onBack: () -> Unit,
     onAcceptCall: (UserInfo) -> Unit,
     onRejectCall: (UserInfo) -> Unit,
     onStartCall: (UserInfo, Boolean) -> Unit,
@@ -403,7 +470,10 @@ fun MainScreen(
     onSpeechServiceAction: (Boolean) -> Unit
 ) {
     var hasPermissions by remember { mutableStateOf(false) }
-    var selectedUser by remember { mutableStateOf<UserInfo?>(null) }
+    
+    val selectedUser = remember(currentTargetId, onlineUsers) {
+        onlineUsers.find { it.id == currentTargetId }
+    }
     
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -424,7 +494,7 @@ fun MainScreen(
             IncomingCallDialog(
                 from = incomingCallFrom,
                 onAccept = {
-                    selectedUser = incomingCallFrom
+                    onUserSelected(incomingCallFrom)
                     onAcceptCall(incomingCallFrom)
                 },
                 onReject = { onRejectCall(incomingCallFrom) }
@@ -432,16 +502,19 @@ fun MainScreen(
         }
 
         if (selectedUser == null) {
-            UserListScreen(onlineUsers) { selectedUser = it }
+            UserListScreen(onlineUsers) { 
+                onUserSelected(it)
+            }
         } else {
             CommunicationUI(
-                targetUser = selectedUser!!,
+                targetUser = selectedUser,
                 messages = messagesList,
+                myName = myName,
                 eglBaseContext = eglBaseContext,
-                onBack = { selectedUser = null },
-                onStartCall = { isVideo -> onStartCall(selectedUser!!, isVideo) },
-                onSendMessage = { msg -> onSendMessage(selectedUser!!, msg) },
-                onHangup = { onHangup(selectedUser!!) },
+                onBack = onBack,
+                onStartCall = { isVideo -> onStartCall(selectedUser, isVideo) },
+                onSendMessage = { msg -> onSendMessage(selectedUser, msg) },
+                onHangup = { onHangup(selectedUser) },
                 onToggleListening = onSpeechServiceAction
             )
         }
@@ -568,6 +641,7 @@ fun UserListScreen(users: List<UserInfo>, onUserClick: (UserInfo) -> Unit) {
 fun CommunicationUI(
     targetUser: UserInfo,
     messages: List<ChatMessage>,
+    myName: String,
     eglBaseContext: EglBase.Context?,
     onBack: () -> Unit,
     onStartCall: (Boolean) -> Unit,
@@ -621,6 +695,7 @@ fun CommunicationUI(
             ChatSection(
                 modifier = Modifier.weight(1f),
                 messages = messages,
+                myName = myName,
                 onSendMessage = onSendMessage,
                 isListening = isListening,
                 onToggleListening = {
@@ -636,6 +711,7 @@ fun CommunicationUI(
 fun ChatSection(
     modifier: Modifier = Modifier,
     messages: List<ChatMessage>,
+    myName: String,
     onSendMessage: (String) -> Unit,
     isListening: Boolean,
     onToggleListening: () -> Unit
@@ -643,9 +719,14 @@ fun ChatSection(
     var textState by remember { mutableStateOf("") }
 
     Column(modifier = modifier.padding(8.dp)) {
-        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            items(messages) { msg ->
-                val isMe = msg.sender.startsWith("Eu") || msg.sender == "Me" || msg.sender.contains("myName") // myName value check would be better but simplified here
+        val dateFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+        
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            reverseLayout = true
+        ) {
+            items(messages.asReversed()) { msg ->
+                val isMe = msg.sender == "Eu: $myName" || msg.sender == myName
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = if (isMe) Alignment.CenterEnd else Alignment.CenterStart) {
                     Card(
                         modifier = Modifier.padding(vertical = 4.dp).widthIn(max = 280.dp),
@@ -656,6 +737,12 @@ fun ChatSection(
                         Column(modifier = Modifier.padding(8.dp)) {
                             Text(msg.sender, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
                             Text(msg.text, color = MaterialTheme.colorScheme.onSurface)
+                            Text(
+                                text = dateFormat.format(Date(msg.timestamp)),
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                                modifier = Modifier.align(Alignment.End),
+                                color = MaterialTheme.colorScheme.outline
+                            )
                         }
                     }
                 }
@@ -723,10 +810,14 @@ fun MainScreenPreview() {
         val messages = remember { mutableStateListOf<ChatMessage>() }
         MainScreen(
             myId = "minha-id",
+            myName = "Eu",
             onlineUsers = listOf(UserInfo("1", "User One", "one@test.com")),
             messagesList = messages,
             incomingCallFrom = null,
             eglBaseContext = null,
+            currentTargetId = null,
+            onUserSelected = {},
+            onBack = {},
             onAcceptCall = {},
             onRejectCall = {},
             onStartCall = { _, _ -> },

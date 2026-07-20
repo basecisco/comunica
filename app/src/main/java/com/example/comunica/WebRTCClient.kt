@@ -56,38 +56,54 @@ class WebRTCClient(
         dataChannel = peerConnection?.createDataChannel("chat", dcInit)
         dataChannel?.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(p0: Long) {}
-            override fun onStateChange() {}
+            override fun onStateChange() {
+                android.util.Log.d("ComunicaDebug", "DataChannel State: ${dataChannel?.state()}")
+            }
             override fun onMessage(buffer: DataChannel.Buffer) {
                 val data = buffer.data
                 val bytes = ByteArray(data.remaining())
                 data.get(bytes)
                 val message = String(bytes)
+                android.util.Log.d("ComunicaDebug", "DataChannel: Mensagem recebida: $message")
                 onMessageReceived?.invoke(message)
             }
         })
     }
 
     fun onRemoteDataChannel(remoteDataChannel: DataChannel) {
+        android.util.Log.d("ComunicaDebug", "DataChannel: Recebeu canal remoto")
         dataChannel = remoteDataChannel
         dataChannel?.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(p0: Long) {}
-            override fun onStateChange() {}
+            override fun onStateChange() {
+                android.util.Log.d("ComunicaDebug", "Remote DataChannel State: ${dataChannel?.state()}")
+            }
             override fun onMessage(buffer: DataChannel.Buffer) {
                 val data = buffer.data
                 val bytes = ByteArray(data.remaining())
                 data.get(bytes)
                 val message = String(bytes)
+                android.util.Log.d("ComunicaDebug", "DataChannel: Mensagem recebida (remoto): $message")
                 onMessageReceived?.invoke(message)
             }
         })
     }
 
     fun sendMessage(message: String) {
-        val buffer = DataChannel.Buffer(
-            java.nio.ByteBuffer.wrap(message.toByteArray()),
-            false
-        )
-        dataChannel?.send(buffer)
+        if (dataChannel?.state() == DataChannel.State.OPEN) {
+            val buffer = DataChannel.Buffer(
+                java.nio.ByteBuffer.wrap(message.toByteArray()),
+                false
+            )
+            dataChannel?.send(buffer)
+            android.util.Log.d("ComunicaDebug", "DataChannel: Mensagem enviada: $message")
+        } else {
+            android.util.Log.e("ComunicaDebug", "DataChannel: Falha ao enviar, estado: ${dataChannel?.state()}")
+        }
+    }
+
+    fun isDataChannelOpen(): Boolean {
+        return dataChannel?.state() == DataChannel.State.OPEN
     }
 
     fun createOffer(callback: (SessionDescription) -> Unit) {
