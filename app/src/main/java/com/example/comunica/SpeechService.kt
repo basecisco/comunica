@@ -15,8 +15,9 @@ class SpeechService(
     private var speechRecognizer: SpeechRecognizer? = null
 
     init {
-        if (SpeechRecognizer.isRecognitionAvailable(context)) {
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
+        val appContext = context.applicationContext
+        if (SpeechRecognizer.isRecognitionAvailable(appContext)) {
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(appContext)
             speechRecognizer?.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {}
                 override fun onBeginningOfSpeech() {}
@@ -54,6 +55,7 @@ class SpeechService(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
         }
         speechRecognizer?.startListening(intent)
     }

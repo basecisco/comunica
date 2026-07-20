@@ -130,4 +130,10 @@ class SignalingClient(
         }
         socket?.emit("end-call", data)
     }
+
+    fun disconnect() {
+        socket?.disconnect()
+        socket?.off()
+        socket = null
+    }
 }

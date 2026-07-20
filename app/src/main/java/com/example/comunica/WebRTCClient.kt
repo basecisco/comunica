@@ -7,7 +7,7 @@ class WebRTCClient(
     private val context: Context,
     private val observer: PeerConnection.Observer
 ) {
-    private val rootEglBase: EglBase = EglBase.create()
+    val rootEglBase: EglBase = EglBase.create()
     private var peerConnectionFactory: PeerConnectionFactory
     private var peerConnection: PeerConnection? = null
     private var localAudioTrack: AudioTrack? = null
@@ -146,10 +146,33 @@ class WebRTCClient(
     }
 
     fun closeConnection() {
-        dataChannel?.close()
-        peerConnection?.close()
-        peerConnection = null
-        localAudioTrack = null
-        android.util.Log.d("ComunicaDebug", "WebRTC: Conexão encerrada localmente.")
+        try {
+            dataChannel?.dispose()
+            dataChannel = null
+            
+            peerConnection?.close()
+            peerConnection?.dispose()
+            peerConnection = null
+            
+            localAudioTrack?.dispose()
+            localAudioTrack = null
+            
+            // peerConnectionFactory.dispose() // Geralmente mantida enquanto o app vive, mas se for recriar o client, melhor descartar
+            // rootEglBase.release()
+            
+            android.util.Log.d("ComunicaDebug", "WebRTC: Conexão encerrada e recursos liberados.")
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun dispose() {
+        closeConnection()
+        try {
+            peerConnectionFactory.dispose()
+            rootEglBase.release()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 }

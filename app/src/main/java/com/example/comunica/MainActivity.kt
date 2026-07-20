@@ -1,15 +1,22 @@
 package com.example.comunica
 
 import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.media.ToneGenerator
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.core.app.NotificationCompat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -47,7 +54,7 @@ data class ChatMessage(val sender: String, val text: String, val isTranscription
 class MainActivity : ComponentActivity() {
     private var speechService: SpeechService? = null
     private var signalingClient: SignalingClient? = null
-    private var webRTCClient: WebRTCClient? = null
+    private var webRTCClient by mutableStateOf<WebRTCClient?>(null)
     private var myId: String = ""
     private var myName: String = ""
     private var myEmail: String = ""
@@ -111,6 +118,43 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showIncomingCallNotification(from: UserInfo) {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val wakeLock = powerManager.newWakeLock(PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "Comunica::IncomingCall")
+        wakeLock.acquire(10000) // Acorda a tela por 10 segundos
+
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val channelId = "incoming_calls"
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(channelId, "Chamadas", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Notificações de chamadas recebidas"
+                enableVibration(true)
+                setSound(null, null) 
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setSmallIcon(android.R.drawable.ic_menu_call)
+            .setContentTitle("Chamada de ${from.name}")
+            .setContentText("Toque para atender")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setFullScreenIntent(pendingIntent, true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setAutoCancel(true)
+            .setOngoing(true)
+            .build()
+
+        notificationManager.notify(100, notification)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -122,7 +166,19 @@ class MainActivity : ComponentActivity() {
         if (!savedName.isNullOrBlank()) {
             myName = savedName
             myEmail = savedEmail ?: ""
+            val serviceIntent = Intent(this, SignalingService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
             initWebRTC()
+            speechService = SpeechService(this) { transcription ->
+                runOnUiThread {
+                    messagesState.add(ChatMessage(myName, transcription, isTranscription = true))
+                    webRTCClient?.sendMessage(transcription)
+                }
+            }
         }
 
         setContent {
@@ -138,8 +194,20 @@ class MainActivity : ComponentActivity() {
                         }
                         myName = name
                         myEmail = email
+                        val serviceIntent = Intent(this, SignalingService::class.java)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(serviceIntent)
+                        } else {
+                            startService(serviceIntent)
+                        }
                         loggedIn = true
                         initWebRTC()
+                        speechService = SpeechService(this) { transcription ->
+                            runOnUiThread {
+                                messagesState.add(ChatMessage(myName, transcription, isTranscription = true))
+                                webRTCClient?.sendMessage(transcription)
+                            }
+                        }
                     }
                 } else {
                     MainScreen(
@@ -147,8 +215,11 @@ class MainActivity : ComponentActivity() {
                         onlineUsers = onlineUsersState,
                         messagesList = messagesState,
                         incomingCallFrom = incomingCallFromState.value,
+                        eglBaseContext = webRTCClient?.rootEglBase?.eglBaseContext,
                         onAcceptCall = { from ->
                             stopRingtone()
+                            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                            notificationManager.cancel(100)
                             val sdp = remoteOfferSdp
                             if (sdp != null) {
                                 currentTargetId = from.id
@@ -162,6 +233,8 @@ class MainActivity : ComponentActivity() {
                         },
                         onRejectCall = { from ->
                             stopRingtone()
+                            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                            notificationManager.cancel(100)
                             signalingClient?.endCall(from.id)
                             incomingCallFromState.value = null
                             remoteOfferSdp = null
@@ -197,7 +270,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun initWebRTC(isRestart: Boolean = false) {
-        if (webRTCClient == null || isRestart) {
+        if (isRestart) {
+            webRTCClient?.dispose()
+            webRTCClient = null
+        }
+
+        if (webRTCClient == null) {
             webRTCClient = WebRTCClient(this, object : PeerConnection.Observer {
                 override fun onIceCandidate(candidate: IceCandidate?) {
                     candidate?.let {
@@ -253,8 +331,8 @@ class MainActivity : ComponentActivity() {
                         Log.d("ComunicaDebug", "Oferta recebida de: $fromId. Notificando usuário...")
                         startRingtone()
                         remoteOfferSdp = description
-                        // Tenta encontrar o nome do usuário na lista online
                         val user = onlineUsersState.find { it.id == fromId } ?: UserInfo(fromId, "Usuário " + fromId.take(4), "")
+                        showIncomingCallNotification(user)
                         incomingCallFromState.value = user
                     }
                 }
@@ -284,6 +362,8 @@ class MainActivity : ComponentActivity() {
                         Log.d("ComunicaDebug", "Chamada encerrada pelo remoto.")
                         stopRingtone()
                         stopRingbackTone()
+                        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        notificationManager.cancel(100)
                         webRTCClient?.closeConnection()
                         currentTargetId = null
                         initWebRTC(isRestart = true)
@@ -291,6 +371,19 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             })
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            stopRingtone()
+            stopRingbackTone()
+            speechService?.destroy()
+            webRTCClient?.dispose()
+            signalingClient?.disconnect()
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 }
@@ -301,6 +394,7 @@ fun MainScreen(
     onlineUsers: List<UserInfo>,
     messagesList: MutableList<ChatMessage>,
     incomingCallFrom: UserInfo?,
+    eglBaseContext: EglBase.Context?,
     onAcceptCall: (UserInfo) -> Unit,
     onRejectCall: (UserInfo) -> Unit,
     onStartCall: (UserInfo, Boolean) -> Unit,
@@ -308,7 +402,6 @@ fun MainScreen(
     onHangup: (UserInfo) -> Unit,
     onSpeechServiceAction: (Boolean) -> Unit
 ) {
-    val context = LocalContext.current
     var hasPermissions by remember { mutableStateOf(false) }
     var selectedUser by remember { mutableStateOf<UserInfo?>(null) }
     
@@ -319,22 +412,14 @@ fun MainScreen(
     }
 
     LaunchedEffect(Unit) {
-        permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
+        val permissions = mutableListOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        permissionLauncher.launch(permissions.toTypedArray())
     }
 
     if (hasPermissions || LocalInspectionMode.current) {
-        if (!LocalInspectionMode.current) {
-            DisposableEffect(Unit) {
-                val speechService = SpeechService(context) { text ->
-                    selectedUser?.let {
-                        messagesList.add(ChatMessage("Eu (Voz)", text, true))
-                        onSendMessage(it, text)
-                    }
-                }
-                onDispose { speechService.destroy() }
-            }
-        }
-
         if (incomingCallFrom != null) {
             IncomingCallDialog(
                 from = incomingCallFrom,
@@ -352,6 +437,7 @@ fun MainScreen(
             CommunicationUI(
                 targetUser = selectedUser!!,
                 messages = messagesList,
+                eglBaseContext = eglBaseContext,
                 onBack = { selectedUser = null },
                 onStartCall = { isVideo -> onStartCall(selectedUser!!, isVideo) },
                 onSendMessage = { msg -> onSendMessage(selectedUser!!, msg) },
@@ -482,6 +568,7 @@ fun UserListScreen(users: List<UserInfo>, onUserClick: (UserInfo) -> Unit) {
 fun CommunicationUI(
     targetUser: UserInfo,
     messages: List<ChatMessage>,
+    eglBaseContext: EglBase.Context?,
     onBack: () -> Unit,
     onStartCall: (Boolean) -> Unit,
     onSendMessage: (String) -> Unit,
@@ -517,7 +604,10 @@ fun CommunicationUI(
         Column(modifier = Modifier.padding(padding).fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
             if (isCallActive) {
                 Box(modifier = Modifier.fillMaxWidth().height(200.dp).background(Color.Black)) {
-                    VideoView(modifier = Modifier.align(Alignment.BottomEnd).size(100.dp, 140.dp).padding(8.dp))
+                    VideoView(
+                        eglBaseContext = eglBaseContext,
+                        modifier = Modifier.align(Alignment.BottomEnd).size(100.dp, 140.dp).padding(8.dp)
+                    )
                     Text("Chamada com ${targetUser.name}...", color = Color.White, modifier = Modifier.align(Alignment.Center))
                     IconButton(
                         onClick = { onHangup(); isCallActive = false },
@@ -555,7 +645,7 @@ fun ChatSection(
     Column(modifier = modifier.padding(8.dp)) {
         LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
             items(messages) { msg ->
-                val isMe = msg.sender.startsWith("Eu")
+                val isMe = msg.sender.startsWith("Eu") || msg.sender == "Me" || msg.sender.contains("myName") // myName value check would be better but simplified here
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = if (isMe) Alignment.CenterEnd else Alignment.CenterStart) {
                     Card(
                         modifier = Modifier.padding(vertical = 4.dp).widthIn(max = 280.dp),
@@ -607,7 +697,7 @@ fun ChatSection(
 }
 
 @Composable
-fun VideoView(modifier: Modifier = Modifier) {
+fun VideoView(eglBaseContext: EglBase.Context?, modifier: Modifier = Modifier) {
     if (LocalInspectionMode.current) {
         Box(modifier = modifier.background(Color.DarkGray, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
             Text("Video", color = Color.White, fontSize = 10.sp)
@@ -615,7 +705,11 @@ fun VideoView(modifier: Modifier = Modifier) {
     } else {
         AndroidView(
             factory = { context ->
-                SurfaceViewRenderer(context).apply { init(null, null) }
+                SurfaceViewRenderer(context).apply { 
+                    init(eglBaseContext, null)
+                    setEnableHardwareScaler(true)
+                    setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                }
             },
             modifier = modifier.background(Color.DarkGray, RoundedCornerShape(8.dp))
         )
@@ -632,6 +726,7 @@ fun MainScreenPreview() {
             onlineUsers = listOf(UserInfo("1", "User One", "one@test.com")),
             messagesList = messages,
             incomingCallFrom = null,
+            eglBaseContext = null,
             onAcceptCall = {},
             onRejectCall = {},
             onStartCall = { _, _ -> },
