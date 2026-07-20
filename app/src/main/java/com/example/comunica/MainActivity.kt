@@ -65,6 +65,7 @@ class MainActivity : ComponentActivity() {
     private var myId: String = ""
     private var myName: String = ""
     private var myEmail: String = ""
+    private var myPhotoUri: String = ""
     private var currentTargetId by mutableStateOf<String?>(null)
     
     private val messagesState = mutableStateListOf<ChatMessage>()
@@ -179,10 +180,12 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences("comunica_prefs", Context.MODE_PRIVATE)
         val savedName = prefs.getString("user_name", "")
         val savedEmail = prefs.getString("user_email", "")
+        val savedPhoto = prefs.getString("user_photo", "")
 
         if (!savedName.isNullOrBlank()) {
             myName = savedName
             myEmail = savedEmail ?: ""
+            myPhotoUri = savedPhoto ?: ""
             val serviceIntent = Intent(this, SignalingService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent)
@@ -242,6 +245,8 @@ class MainActivity : ComponentActivity() {
                 MainScreen(
                     myId = myId,
                     myName = myName,
+                    myEmail = myEmail,
+                    myPhotoUri = myPhotoUri,
                     onlineUsers = onlineUsersState,
                     messagesList = messagesState,
                     incomingCallFrom = incomingCallFromState.value,
@@ -251,6 +256,19 @@ class MainActivity : ComponentActivity() {
                         currentTargetId = user.id
                     },
                     onBack = { currentTargetId = null },
+                    onUpdateProfile = { name, email, photo ->
+                        prefs.edit().apply {
+                            putString("user_name", name)
+                            putString("user_email", email)
+                            putString("user_photo", photo)
+                            apply()
+                        }
+                        myName = name
+                        myEmail = email
+                        myPhotoUri = photo
+                        signalingClient?.joinRoom("sala-padrao", myName, myEmail) // Atualiza no servidor
+                        Toast.makeText(this@MainActivity, "Perfil atualizado", Toast.LENGTH_SHORT).show()
+                    },
                     onAcceptCall = { from ->
                             stopRingtone()
                             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -455,6 +473,8 @@ class MainActivity : ComponentActivity() {
 fun MainScreen(
     myId: String,
     myName: String,
+    myEmail: String,
+    myPhotoUri: String,
     onlineUsers: List<UserInfo>,
     messagesList: MutableList<ChatMessage>,
     incomingCallFrom: UserInfo?,
@@ -462,6 +482,7 @@ fun MainScreen(
     currentTargetId: String?,
     onUserSelected: (UserInfo) -> Unit,
     onBack: () -> Unit,
+    onUpdateProfile: (String, String, String) -> Unit,
     onAcceptCall: (UserInfo) -> Unit,
     onRejectCall: (UserInfo) -> Unit,
     onStartCall: (UserInfo, Boolean) -> Unit,
@@ -490,37 +511,118 @@ fun MainScreen(
     }
 
     if (hasPermissions || LocalInspectionMode.current) {
-        if (incomingCallFrom != null) {
-            IncomingCallDialog(
-                from = incomingCallFrom,
-                onAccept = {
-                    onUserSelected(incomingCallFrom)
-                    onAcceptCall(incomingCallFrom)
-                },
-                onReject = { onRejectCall(incomingCallFrom) }
-            )
-        }
+        var showProfileEdit by remember { mutableStateOf(false) }
 
-        if (selectedUser == null) {
-            UserListScreen(onlineUsers) { 
-                onUserSelected(it)
-            }
-        } else {
-            CommunicationUI(
-                targetUser = selectedUser,
-                messages = messagesList,
-                myName = myName,
-                eglBaseContext = eglBaseContext,
-                onBack = onBack,
-                onStartCall = { isVideo -> onStartCall(selectedUser, isVideo) },
-                onSendMessage = { msg -> onSendMessage(selectedUser, msg) },
-                onHangup = { onHangup(selectedUser) },
-                onToggleListening = onSpeechServiceAction
+        if (showProfileEdit) {
+            ProfileEditScreen(
+                currentName = myName,
+                currentEmail = myEmail,
+                currentPhoto = myPhotoUri,
+                onSave = { name, email, photo ->
+                    onUpdateProfile(name, email, photo)
+                    showProfileEdit = false
+                },
+                onBack = { showProfileEdit = false }
             )
+        } else {
+            if (incomingCallFrom != null) {
+                IncomingCallDialog(
+                    from = incomingCallFrom,
+                    onAccept = {
+                        onUserSelected(incomingCallFrom)
+                        onAcceptCall(incomingCallFrom)
+                    },
+                    onReject = { onRejectCall(incomingCallFrom) }
+                )
+            }
+
+            if (selectedUser == null) {
+                UserListScreen(
+                    users = onlineUsers,
+                    onUserClick = { onUserSelected(it) },
+                    onProfileClick = { showProfileEdit = true }
+                )
+            } else {
+                CommunicationUI(
+                    targetUser = selectedUser,
+                    messages = messagesList,
+                    myName = myName,
+                    eglBaseContext = eglBaseContext,
+                    onBack = onBack,
+                    onStartCall = { isVideo -> onStartCall(selectedUser, isVideo) },
+                    onSendMessage = { msg -> onSendMessage(selectedUser, msg) },
+                    onHangup = { onHangup(selectedUser) },
+                    onToggleListening = onSpeechServiceAction
+                )
+            }
         }
     } else {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("Permissões necessárias para continuar.")
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ProfileEditScreen(
+    currentName: String,
+    currentEmail: String,
+    currentPhoto: String,
+    onSave: (String, String, String) -> Unit,
+    onBack: () -> Unit
+) {
+    var name by remember { mutableStateOf(currentName) }
+    var email by remember { mutableStateOf(currentEmail) }
+    var photo by remember { mutableStateOf(currentPhoto) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) }
+                },
+                title = { Text("Editar Perfil") }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier.padding(padding).padding(16.dp).fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier.size(100.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(60.dp), tint = Color.White)
+            }
+            
+            Spacer(Modifier.height(32.dp))
+
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Nome") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            OutlinedTextField(
+                value = email,
+                onValueChange = { email = it },
+                label = { Text("Email") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(Modifier.height(32.dp))
+
+            Button(
+                onClick = { onSave(name, email, photo) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Salvar Alterações")
+            }
         }
     }
 }
@@ -596,11 +698,20 @@ fun IncomingCallDialog(from: UserInfo, onAccept: () -> Unit, onReject: () -> Uni
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun UserListScreen(users: List<UserInfo>, onUserClick: (UserInfo) -> Unit) {
+fun UserListScreen(
+    users: List<UserInfo>,
+    onUserClick: (UserInfo) -> Unit,
+    onProfileClick: () -> Unit
+) {
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Comunica", fontWeight = FontWeight.Bold) },
+                actions = {
+                    IconButton(onClick = onProfileClick) {
+                        Icon(Icons.Default.Settings, contentDescription = "Perfil")
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
             )
         }
@@ -811,6 +922,8 @@ fun MainScreenPreview() {
         MainScreen(
             myId = "minha-id",
             myName = "Eu",
+            myEmail = "eu@teste.com",
+            myPhotoUri = "",
             onlineUsers = listOf(UserInfo("1", "User One", "one@test.com")),
             messagesList = messages,
             incomingCallFrom = null,
@@ -818,6 +931,7 @@ fun MainScreenPreview() {
             currentTargetId = null,
             onUserSelected = {},
             onBack = {},
+            onUpdateProfile = { _, _, _ -> },
             onAcceptCall = {},
             onRejectCall = {},
             onStartCall = { _, _ -> },
