@@ -22,7 +22,7 @@ class WebRTCClient(
         // Configura o áudio do sistema para modo comunicação
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
         audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
-        audioManager.isSpeakerphoneOn = true
+        audioManager.isSpeakerphoneOn = false
 
         val factoryOptions = PeerConnectionFactory.Options()
         peerConnectionFactory = PeerConnectionFactory.builder()
@@ -159,6 +159,11 @@ class WebRTCClient(
 
     fun addIceCandidate(candidate: IceCandidate) {
         peerConnection?.addIceCandidate(candidate)
+    }
+
+    fun setSpeakerphoneOn(on: Boolean) {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        audioManager.isSpeakerphoneOn = on
     }
 
     fun closeConnection() {

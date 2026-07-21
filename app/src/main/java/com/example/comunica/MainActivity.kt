@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
     private var myName: String = ""
     private var myEmail: String = ""
     private var myPhotoUri: String = ""
+    private var serverUrl: String = "http://jacksonvillecam.ddns.net:8080"
     private var currentTargetId by mutableStateOf<String?>(null)
     
     private val messagesState = mutableStateListOf<ChatMessage>()
@@ -109,7 +110,7 @@ class MainActivity : ComponentActivity() {
                 // Força o modo de comunicação após parar o toque
                 val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-                audioManager.isSpeakerphoneOn = true
+                audioManager.isSpeakerphoneOn = false
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -133,7 +134,7 @@ class MainActivity : ComponentActivity() {
                 // Força o modo de comunicação após parar o tom
                 val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-                audioManager.isSpeakerphoneOn = true
+                audioManager.isSpeakerphoneOn = false
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -185,11 +186,13 @@ class MainActivity : ComponentActivity() {
         val savedName = prefs.getString("user_name", "")
         val savedEmail = prefs.getString("user_email", "")
         val savedPhoto = prefs.getString("user_photo", "")
+        val savedUrl = prefs.getString("server_url", "http://jacksonvillecam.ddns.net:8080")
 
         if (!savedName.isNullOrBlank()) {
             myName = savedName
             myEmail = savedEmail ?: ""
             myPhotoUri = savedPhoto ?: ""
+            serverUrl = savedUrl ?: "http://jacksonvillecam.ddns.net:8080"
             val serviceIntent = Intent(this, SignalingService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent)
@@ -217,14 +220,16 @@ class MainActivity : ComponentActivity() {
             
             ComunicaTheme {
                 if (!loggedIn) {
-                    LoginScreen { name, email ->
+                    LoginScreen { name, email, url ->
                         prefs.edit().apply {
                             putString("user_name", name)
                             putString("user_email", email)
+                            putString("server_url", url)
                             apply()
                         }
                         myName = name
                         myEmail = email
+                        serverUrl = url
                         val serviceIntent = Intent(this, SignalingService::class.java)
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                             startForegroundService(serviceIntent)
@@ -262,16 +267,26 @@ class MainActivity : ComponentActivity() {
                         currentTargetId = user.id
                     },
                     onBack = { currentTargetId = null },
-                    onUpdateProfile = { name, email, photo ->
+                    onUpdateProfile = { name, email, photo, url ->
                         prefs.edit().apply {
                             putString("user_name", name)
                             putString("user_email", email)
                             putString("user_photo", photo)
+                            putString("server_url", url)
                             apply()
                         }
                         myName = name
                         myEmail = email
                         myPhotoUri = photo
+                        serverUrl = url
+                        
+                        // Reconecta se a URL mudar
+                        if (signalingClient != null) {
+                            signalingClient?.disconnect()
+                            signalingClient = null
+                        }
+                        initWebRTC()
+                        
                         signalingClient?.joinRoom("sala-padrao", myName, myEmail, myPhotoUri) // Atualiza no servidor
                         Toast.makeText(this@MainActivity, "Perfil atualizado", Toast.LENGTH_SHORT).show()
                     },
@@ -326,6 +341,9 @@ class MainActivity : ComponentActivity() {
                         onSpeechServiceAction = { isListening ->
                             if (isListening) speechService?.startListening()
                             else speechService?.stopListening()
+                        },
+                        onToggleSpeakerphone = { isOn ->
+                            webRTCClient?.setSpeakerphoneOn(isOn)
                         }
                     )
                 }
@@ -385,7 +403,7 @@ class MainActivity : ComponentActivity() {
         }
 
         if (signalingClient == null) {
-            signalingClient = SignalingClient("http://192.168.15.33:3000", object : SignalingClient.SignalingListener {
+            signalingClient = SignalingClient(serverUrl, object : SignalingClient.SignalingListener {
                 override fun onConnectionEstablished(id: String) {
                     myId = id
                     Log.d("ComunicaDebug", "Conectado como: $myId. Entrando no lobby...")
@@ -488,13 +506,14 @@ fun MainScreen(
     currentTargetId: String?,
     onUserSelected: (UserInfo) -> Unit,
     onBack: () -> Unit,
-    onUpdateProfile: (String, String, String) -> Unit,
+    onUpdateProfile: (String, String, String, String) -> Unit,
     onAcceptCall: (UserInfo) -> Unit,
     onRejectCall: (UserInfo) -> Unit,
     onStartCall: (UserInfo, Boolean) -> Unit,
     onSendMessage: (UserInfo, String) -> Unit,
     onHangup: (UserInfo) -> Unit,
-    onSpeechServiceAction: (Boolean) -> Unit
+    onSpeechServiceAction: (Boolean) -> Unit,
+    onToggleSpeakerphone: (Boolean) -> Unit
 ) {
     var hasPermissions by remember { mutableStateOf(false) }
     
@@ -523,12 +542,16 @@ fun MainScreen(
         var showProfileEdit by remember { mutableStateOf(false) }
 
         if (showProfileEdit) {
+            val prefs = LocalContext.current.getSharedPreferences("comunica_prefs", Context.MODE_PRIVATE)
+            val currentUrl = prefs.getString("server_url", "http://jacksonvillecam.ddns.net:8080") ?: "http://jacksonvillecam.ddns.net:8080"
+            
             ProfileEditScreen(
                 currentName = myName,
                 currentEmail = myEmail,
                 currentPhoto = myPhotoUri,
-                onSave = { name, email, photo ->
-                    onUpdateProfile(name, email, photo)
+                currentUrl = currentUrl,
+                onSave = { name, email, photo, url ->
+                    onUpdateProfile(name, email, photo, url)
                     showProfileEdit = false
                 },
                 onBack = { showProfileEdit = false }
@@ -561,7 +584,8 @@ fun MainScreen(
                     onStartCall = { isVideo -> onStartCall(selectedUser, isVideo) },
                     onSendMessage = { msg -> onSendMessage(selectedUser, msg) },
                     onHangup = { onHangup(selectedUser) },
-                    onToggleListening = onSpeechServiceAction
+                    onToggleListening = onSpeechServiceAction,
+                    onToggleSpeakerphone = onToggleSpeakerphone
                 )
             }
         }
@@ -578,12 +602,14 @@ fun ProfileEditScreen(
     currentName: String,
     currentEmail: String,
     currentPhoto: String,
-    onSave: (String, String, String) -> Unit,
+    currentUrl: String,
+    onSave: (String, String, String, String) -> Unit,
     onBack: () -> Unit
 ) {
     var name by remember { mutableStateOf(currentName) }
     var email by remember { mutableStateOf(currentEmail) }
     var photo by remember { mutableStateOf(currentPhoto) }
+    var url by remember { mutableStateOf(currentUrl) }
 
     val context = LocalContext.current
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -667,10 +693,19 @@ fun ProfileEditScreen(
                 modifier = Modifier.fillMaxWidth()
             )
 
+            Spacer(Modifier.height(16.dp))
+
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                label = { Text("URL do Servidor") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
             Spacer(Modifier.height(32.dp))
 
             Button(
-                onClick = { onSave(name, email, photo) },
+                onClick = { onSave(name, email, photo, url) },
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Salvar Alterações")
@@ -680,9 +715,10 @@ fun ProfileEditScreen(
 }
 
 @Composable
-fun LoginScreen(onLogin: (String, String) -> Unit) {
+fun LoginScreen(onLogin: (String, String, String) -> Unit) {
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf("http://jacksonvillecam.ddns.net:8080") }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(32.dp),
@@ -692,7 +728,7 @@ fun LoginScreen(onLogin: (String, String) -> Unit) {
         Icon(Icons.Default.Forum, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.height(16.dp))
         Text("Bem-vindo ao Comunica", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text("Entre com seu nome para começar", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.outline)
+        Text("Configure sua conta para começar", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.outline)
         
         Spacer(Modifier.height(32.dp))
         
@@ -716,12 +752,23 @@ fun LoginScreen(onLogin: (String, String) -> Unit) {
             shape = RoundedCornerShape(12.dp)
         )
         
+        Spacer(Modifier.height(16.dp))
+        
+        OutlinedTextField(
+            value = url, 
+            onValueChange = { url = it }, 
+            label = { Text("URL do Servidor") }, 
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            shape = RoundedCornerShape(12.dp)
+        )
+        
         Spacer(Modifier.height(32.dp))
         
         Button(
-            onClick = { if (name.isNotBlank()) onLogin(name, email) },
+            onClick = { if (name.isNotBlank() && url.isNotBlank()) onLogin(name, email, url) },
             modifier = Modifier.fillMaxWidth().height(50.dp),
-            enabled = name.isNotBlank(),
+            enabled = name.isNotBlank() && url.isNotBlank(),
             shape = RoundedCornerShape(12.dp)
         ) {
             Text("Entrar")
@@ -825,10 +872,12 @@ fun CommunicationUI(
     onStartCall: (Boolean) -> Unit,
     onSendMessage: (String) -> Unit,
     onHangup: () -> Unit,
-    onToggleListening: (Boolean) -> Unit
+    onToggleListening: (Boolean) -> Unit,
+    onToggleSpeakerphone: (Boolean) -> Unit
 ) {
     var isCallActive by remember { mutableStateOf(false) }
     var isListening by remember { mutableStateOf(false) }
+    var isSpeakerphoneOn by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -861,6 +910,18 @@ fun CommunicationUI(
                     }
                 },
                 actions = {
+                    if (isCallActive) {
+                        IconButton(onClick = { 
+                            isSpeakerphoneOn = !isSpeakerphoneOn
+                            onToggleSpeakerphone(isSpeakerphoneOn)
+                        }) { 
+                            Icon(
+                                if (isSpeakerphoneOn) Icons.Default.VolumeUp else Icons.Default.VolumeDown, 
+                                contentDescription = null,
+                                tint = if (isSpeakerphoneOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            ) 
+                        }
+                    }
                     IconButton(onClick = { onStartCall(false); isCallActive = true }) { Icon(Icons.Default.Call, contentDescription = null) }
                     IconButton(onClick = { onStartCall(true); isCallActive = true }) { Icon(Icons.Default.Videocam, contentDescription = null) }
                 },
@@ -1013,13 +1074,14 @@ fun MainScreenPreview() {
             currentTargetId = null,
             onUserSelected = {},
             onBack = {},
-            onUpdateProfile = { _, _, _ -> },
+            onUpdateProfile = { _, _, _, _ -> },
             onAcceptCall = {},
             onRejectCall = {},
             onStartCall = { _, _ -> },
             onSendMessage = { _, _ -> },
             onHangup = {},
-            onSpeechServiceAction = {}
+            onSpeechServiceAction = {},
+            onToggleSpeakerphone = {}
         )
     }
 }
