@@ -55,11 +55,16 @@ import java.util.*
 import org.json.JSONObject
 import org.webrtc.*
 
+enum class MessageStatus { SENT, READ }
+
 data class ChatMessage(
-    val sender: String,
+    val senderId: String,
+    val senderName: String,
+    val recipientId: String,
     val text: String,
     val isTranscription: Boolean = false,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val status: MessageStatus = MessageStatus.SENT
 )
 
 class MainActivity : ComponentActivity() {
@@ -75,6 +80,7 @@ class MainActivity : ComponentActivity() {
     
     private val messagesState = mutableStateListOf<ChatMessage>()
     private val onlineUsersState = mutableStateListOf<UserInfo>()
+    private val unreadCounts = mutableStateMapOf<String, Int>()
     
     private val incomingCallFromState = mutableStateOf<UserInfo?>(null)
     private var remoteOfferSdp: String? = null
@@ -203,11 +209,11 @@ class MainActivity : ComponentActivity() {
             signalingClient?.joinRoom("sala-padrao", myName, myEmail, myPhotoUri)
             speechService = SpeechService(this) { transcription ->
                 runOnUiThread {
-                    messagesState.add(ChatMessage(myName, transcription, isTranscription = true))
-                    if (webRTCClient?.isDataChannelOpen() == true) {
-                        webRTCClient?.sendMessage(transcription)
-                    } else {
-                        currentTargetId?.let { targetId ->
+                    currentTargetId?.let { targetId ->
+                        messagesState.add(ChatMessage(myId, myName, targetId, transcription, isTranscription = true))
+                        if (webRTCClient?.isDataChannelOpen() == true) {
+                            webRTCClient?.sendMessage(transcription)
+                        } else {
                             signalingClient?.sendChatMessage(targetId, transcription)
                         }
                     }
@@ -241,11 +247,11 @@ class MainActivity : ComponentActivity() {
                         signalingClient?.joinRoom("sala-padrao", myName, myEmail, myPhotoUri)
                         speechService = SpeechService(this) { transcription ->
                             runOnUiThread {
-                                messagesState.add(ChatMessage(myName, transcription, isTranscription = true))
-                                if (webRTCClient?.isDataChannelOpen() == true) {
-                                    webRTCClient?.sendMessage(transcription)
-                                } else {
-                                    currentTargetId?.let { targetId ->
+                                currentTargetId?.let { targetId ->
+                                    messagesState.add(ChatMessage(myId, myName, targetId, transcription, isTranscription = true))
+                                    if (webRTCClient?.isDataChannelOpen() == true) {
+                                        webRTCClient?.sendMessage(transcription)
+                                    } else {
                                         signalingClient?.sendChatMessage(targetId, transcription)
                                     }
                                 }
@@ -260,11 +266,21 @@ class MainActivity : ComponentActivity() {
                     myPhotoUri = myPhotoUri,
                     onlineUsers = onlineUsersState,
                     messagesList = messagesState,
+                    unreadCounts = unreadCounts,
                     incomingCallFrom = incomingCallFromState.value,
                     eglBaseContext = webRTCClient?.rootEglBase?.eglBaseContext,
                     currentTargetId = currentTargetId,
                     onUserSelected = { user ->
                         currentTargetId = user.id
+                        unreadCounts[user.id] = 0
+                        // Marcar como lidas ao entrar na tela
+                        signalingClient?.sendMessageRead(user.id)
+                        for (i in messagesState.indices) {
+                            val msg = messagesState[i]
+                            if (msg.senderId == user.id && msg.status != MessageStatus.READ) {
+                                messagesState[i] = msg.copy(status = MessageStatus.READ)
+                            }
+                        }
                     },
                     onBack = { currentTargetId = null },
                     onUpdateProfile = { name, email, photo, url ->
@@ -323,7 +339,7 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onSendMessage = { target, msg ->
-                            messagesState.add(ChatMessage("Eu: $myName", msg))
+                            messagesState.add(ChatMessage(myId, "Eu: $myName", target.id, msg))
                             if (webRTCClient?.isDataChannelOpen() == true) {
                                 webRTCClient?.sendMessage(msg)
                             } else {
@@ -393,9 +409,13 @@ class MainActivity : ComponentActivity() {
 
             webRTCClient?.setOnMessageReceivedListener { message ->
                 runOnUiThread {
-                    val senderName = onlineUsersState.find { it.id == currentTargetId }?.name ?: "Remoto"
-                    messagesState.add(ChatMessage(senderName, message))
+                    val senderId = currentTargetId ?: "remoto"
+                    val sender = onlineUsersState.find { it.id == senderId }
+                    val senderName = sender?.name ?: "Remoto"
+                    messagesState.add(ChatMessage(senderId, senderName, myId, message))
                     playNotificationSound()
+                    // Se o DataChannel está aberto, a tela geralmente está aberta
+                    signalingClient?.sendMessageRead(senderId)
                 }
             }
             
@@ -461,17 +481,30 @@ class MainActivity : ComponentActivity() {
                     runOnUiThread {
                         val sender = onlineUsersState.find { it.id == from }
                         if (sender != null) {
-                            // Se não estivermos conversando com ninguém ou estivermos conversando com outra pessoa
-                            // mudamos o foco para quem enviou a mensagem
-                            if (currentTargetId != from) {
-                                currentTargetId = from
-                                // Precisamos atualizar o selectedUser no MainScreen. 
-                                // Como o MainScreen é um Composable, vamos usar um estado para controlar isso.
-                            }
-                            
                             val senderName = sender.name
-                            messagesState.add(ChatMessage(senderName, message))
+                            messagesState.add(ChatMessage(from, senderName, myId, message))
                             playNotificationSound()
+                            
+                            if (currentTargetId != from) {
+                                // Incrementa contador se não estiver com a tela aberta
+                                val currentCount = unreadCounts[from] ?: 0
+                                unreadCounts[from] = currentCount + 1
+                            } else {
+                                // Se estiver com a tela aberta, marca como lida imediatamente
+                                signalingClient?.sendMessageRead(from)
+                            }
+                        }
+                    }
+                }
+
+                override fun onMessageReadReceived(from: String) {
+                    runOnUiThread {
+                        // Atualiza status das mensagens enviadas para este usuário (from leu)
+                        for (i in messagesState.indices) {
+                            val msg = messagesState[i]
+                            if (msg.senderId == myId && msg.recipientId == from && msg.status != MessageStatus.READ) {
+                                messagesState[i] = msg.copy(status = MessageStatus.READ)
+                            }
                         }
                     }
                 }
@@ -500,7 +533,8 @@ fun MainScreen(
     myEmail: String,
     myPhotoUri: String,
     onlineUsers: List<UserInfo>,
-    messagesList: MutableList<ChatMessage>,
+    messagesList: List<ChatMessage>,
+    unreadCounts: Map<String, Int>,
     incomingCallFrom: UserInfo?,
     eglBaseContext: EglBase.Context?,
     currentTargetId: String?,
@@ -571,6 +605,7 @@ fun MainScreen(
             if (selectedUser == null) {
                 UserListScreen(
                     users = onlineUsers,
+                    unreadCounts = unreadCounts,
                     onUserClick = { onUserSelected(it) },
                     onProfileClick = { showProfileEdit = true }
                 )
@@ -578,6 +613,7 @@ fun MainScreen(
                 CommunicationUI(
                     targetUser = selectedUser,
                     messages = messagesList,
+                    myId = myId,
                     myName = myName,
                     eglBaseContext = eglBaseContext,
                     onBack = onBack,
@@ -799,6 +835,7 @@ fun IncomingCallDialog(from: UserInfo, onAccept: () -> Unit, onReject: () -> Uni
 @Composable
 fun UserListScreen(
     users: List<UserInfo>,
+    unreadCounts: Map<String, Int>,
     onUserClick: (UserInfo) -> Unit,
     onProfileClick: () -> Unit
 ) {
@@ -824,6 +861,7 @@ fun UserListScreen(
             )
             LazyColumn {
                 items(users) { user ->
+                    val unreadCount = unreadCounts[user.id] ?: 0
                     ListItem(
                         headlineContent = { Text(user.name, fontWeight = FontWeight.SemiBold) },
                         supportingContent = {
@@ -852,6 +890,24 @@ fun UserListScreen(
                                 }
                             }
                         },
+                        trailingContent = {
+                            if (unreadCount > 0) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(24.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Green),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = unreadCount.toString(),
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        },
                         modifier = Modifier.clickable { onUserClick(user) }
                     )
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), thickness = 0.5.dp)
@@ -866,6 +922,7 @@ fun UserListScreen(
 fun CommunicationUI(
     targetUser: UserInfo,
     messages: List<ChatMessage>,
+    myId: String,
     myName: String,
     eglBaseContext: EglBase.Context?,
     onBack: () -> Unit,
@@ -948,7 +1005,8 @@ fun CommunicationUI(
 
             ChatSection(
                 modifier = Modifier.weight(1f),
-                messages = messages,
+                messages = messages.filter { it.senderId == targetUser.id || it.senderId == myId },
+                myId = myId,
                 myName = myName,
                 onSendMessage = onSendMessage,
                 isListening = isListening,
@@ -965,6 +1023,7 @@ fun CommunicationUI(
 fun ChatSection(
     modifier: Modifier = Modifier,
     messages: List<ChatMessage>,
+    myId: String,
     myName: String,
     onSendMessage: (String) -> Unit,
     isListening: Boolean,
@@ -980,7 +1039,7 @@ fun ChatSection(
             reverseLayout = true
         ) {
             items(messages.asReversed()) { msg ->
-                val isMe = msg.sender == "Eu: $myName" || msg.sender == myName
+                val isMe = msg.senderId == myId
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = if (isMe) Alignment.CenterEnd else Alignment.CenterStart) {
                     Card(
                         modifier = Modifier.padding(vertical = 4.dp).widthIn(max = 280.dp),
@@ -989,14 +1048,27 @@ fun ChatSection(
                         )
                     ) {
                         Column(modifier = Modifier.padding(8.dp)) {
-                            Text(msg.sender, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                            Text(msg.senderName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
                             Text(msg.text, color = MaterialTheme.colorScheme.onSurface)
-                            Text(
-                                text = dateFormat.format(Date(msg.timestamp)),
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                            Row(
                                 modifier = Modifier.align(Alignment.End),
-                                color = MaterialTheme.colorScheme.outline
-                            )
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = dateFormat.format(Date(msg.timestamp)),
+                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.sp),
+                                    color = MaterialTheme.colorScheme.outline
+                                )
+                                if (isMe) {
+                                    Spacer(Modifier.width(4.dp))
+                                    Icon(
+                                        imageVector = if (msg.status == MessageStatus.READ) Icons.Default.DoneAll else Icons.Default.Done,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = if (msg.status == MessageStatus.READ) Color.Cyan else MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1069,6 +1141,7 @@ fun MainScreenPreview() {
             myPhotoUri = "",
             onlineUsers = listOf(UserInfo("1", "User One", "one@test.com", "")),
             messagesList = messages,
+            unreadCounts = emptyMap(),
             incomingCallFrom = null,
             eglBaseContext = null,
             currentTargetId = null,
