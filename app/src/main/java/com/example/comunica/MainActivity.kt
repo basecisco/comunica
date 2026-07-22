@@ -83,6 +83,7 @@ class MainActivity : ComponentActivity() {
     private val unreadCounts = mutableStateMapOf<String, Int>()
     
     private val incomingCallFromState = mutableStateOf<UserInfo?>(null)
+    private var isCallActive by mutableStateOf(false)
     private var remoteOfferSdp: String? = null
 
     private var ringtone: Ringtone? = null
@@ -267,6 +268,7 @@ class MainActivity : ComponentActivity() {
                     onlineUsers = onlineUsersState,
                     messagesList = messagesState,
                     unreadCounts = unreadCounts,
+                    isCallActive = isCallActive,
                     incomingCallFrom = incomingCallFromState.value,
                     eglBaseContext = webRTCClient?.rootEglBase?.eglBaseContext,
                     currentTargetId = currentTargetId,
@@ -308,6 +310,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onAcceptCall = { from ->
                             stopRingtone()
+                            isCallActive = true
                             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                             notificationManager.cancel(100)
                             val sdp = remoteOfferSdp
@@ -331,6 +334,7 @@ class MainActivity : ComponentActivity() {
                         },
                         onStartCall = { target, isVideo ->
                             startRingbackTone()
+                            isCallActive = true
                             if (webRTCClient != null && signalingClient != null) {
                                 currentTargetId = target.id
                                 webRTCClient?.createOffer { offerSdp ->
@@ -349,6 +353,7 @@ class MainActivity : ComponentActivity() {
                         onHangup = { target ->
                             stopRingbackTone()
                             stopRingtone()
+                            isCallActive = false
                             webRTCClient?.closeConnection()
                             signalingClient?.endCall(target.id)
                             currentTargetId = null
@@ -468,6 +473,7 @@ class MainActivity : ComponentActivity() {
                         Log.d("ComunicaDebug", "Chamada encerrada pelo remoto.")
                         stopRingtone()
                         stopRingbackTone()
+                        isCallActive = false
                         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                         notificationManager.cancel(100)
                         webRTCClient?.closeConnection()
@@ -535,6 +541,7 @@ fun MainScreen(
     onlineUsers: List<UserInfo>,
     messagesList: List<ChatMessage>,
     unreadCounts: Map<String, Int>,
+    isCallActive: Boolean,
     incomingCallFrom: UserInfo?,
     eglBaseContext: EglBase.Context?,
     currentTargetId: String?,
@@ -616,6 +623,7 @@ fun MainScreen(
                     myId = myId,
                     myName = myName,
                     eglBaseContext = eglBaseContext,
+                    isCallActive = isCallActive,
                     onBack = onBack,
                     onStartCall = { isVideo -> onStartCall(selectedUser, isVideo) },
                     onSendMessage = { msg -> onSendMessage(selectedUser, msg) },
@@ -925,6 +933,7 @@ fun CommunicationUI(
     myId: String,
     myName: String,
     eglBaseContext: EglBase.Context?,
+    isCallActive: Boolean,
     onBack: () -> Unit,
     onStartCall: (Boolean) -> Unit,
     onSendMessage: (String) -> Unit,
@@ -932,7 +941,6 @@ fun CommunicationUI(
     onToggleListening: (Boolean) -> Unit,
     onToggleSpeakerphone: (Boolean) -> Unit
 ) {
-    var isCallActive by remember { mutableStateOf(false) }
     var isListening by remember { mutableStateOf(false) }
     var isSpeakerphoneOn by remember { mutableStateOf(false) }
 
@@ -979,8 +987,8 @@ fun CommunicationUI(
                             ) 
                         }
                     }
-                    IconButton(onClick = { onStartCall(false); isCallActive = true }) { Icon(Icons.Default.Call, contentDescription = null) }
-                    IconButton(onClick = { onStartCall(true); isCallActive = true }) { Icon(Icons.Default.Videocam, contentDescription = null) }
+                    IconButton(onClick = { onStartCall(false) }) { Icon(Icons.Default.Call, contentDescription = null) }
+                    IconButton(onClick = { onStartCall(true) }) { Icon(Icons.Default.Videocam, contentDescription = null) }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
             )
@@ -995,7 +1003,7 @@ fun CommunicationUI(
                     )
                     Text("Chamada com ${targetUser.name}...", color = Color.White, modifier = Modifier.align(Alignment.Center))
                     IconButton(
-                        onClick = { onHangup(); isCallActive = false },
+                        onClick = { onHangup() },
                         modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp).clip(CircleShape).background(Color.Red)
                     ) {
                         Icon(Icons.Default.CallEnd, contentDescription = null, tint = Color.White)
@@ -1142,6 +1150,7 @@ fun MainScreenPreview() {
             onlineUsers = listOf(UserInfo("1", "User One", "one@test.com", "")),
             messagesList = messages,
             unreadCounts = emptyMap(),
+            isCallActive = false,
             incomingCallFrom = null,
             eglBaseContext = null,
             currentTargetId = null,
