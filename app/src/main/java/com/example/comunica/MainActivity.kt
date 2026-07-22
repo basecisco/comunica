@@ -1035,48 +1035,55 @@ fun CommunicationUI(
                             Icon(
                                 if (isSpeakerphoneOn) Icons.Default.VolumeUp else Icons.Default.VolumeDown, 
                                 contentDescription = null,
-                                tint = if (isSpeakerphoneOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                tint = if (isSpeakerphoneOn) MaterialTheme.colorScheme.primary else if (isCallActive) Color.White else MaterialTheme.colorScheme.onSurface
                             ) 
                         }
+                        IconButton(onClick = { onHangup() }) {
+                            Icon(Icons.Default.CallEnd, contentDescription = null, tint = Color.Red)
+                        }
+                    } else {
+                        IconButton(onClick = { onStartCall(false) }) { Icon(Icons.Default.Call, contentDescription = null) }
+                        IconButton(onClick = { onStartCall(true) }) { Icon(Icons.Default.Videocam, contentDescription = null) }
                     }
-                    IconButton(onClick = { onStartCall(false) }) { Icon(Icons.Default.Call, contentDescription = null) }
-                    IconButton(onClick = { onStartCall(true) }) { Icon(Icons.Default.Videocam, contentDescription = null) }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = if (isCallActive) Color.Black.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surface,
+                    titleContentColor = if (isCallActive) Color.White else MaterialTheme.colorScheme.onSurface,
+                    navigationIconContentColor = if (isCallActive) Color.White else MaterialTheme.colorScheme.onSurface
+                )
             )
         }
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+        Box(modifier = Modifier.padding(padding).fillMaxSize().background(if (isCallActive) Color.Black else MaterialTheme.colorScheme.surface)) {
             if (isCallActive) {
-                Box(modifier = Modifier.fillMaxWidth().height(200.dp).background(Color.Black)) {
-                    VideoView(
-                        eglBaseContext = eglBaseContext,
-                        onRendererReady = { renderer ->
-                            Log.d("ComunicaDebug", "CommunicationUI: Remote VideoView pronto")
-                            onRemoteRendererReady(renderer)
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    VideoView(
-                        eglBaseContext = eglBaseContext,
-                        onRendererReady = { renderer ->
-                            Log.d("ComunicaDebug", "CommunicationUI: Local VideoView pronto")
-                            onLocalRendererReady(renderer)
-                        },
-                        modifier = Modifier.align(Alignment.BottomEnd).size(100.dp, 140.dp).padding(8.dp)
-                    )
-                    Text("Chamada com ${targetUser.name}...", color = Color.White.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.TopCenter).padding(8.dp))
-                    IconButton(
-                        onClick = { onHangup() },
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp).clip(CircleShape).background(Color.Red)
-                    ) {
-                        Icon(Icons.Default.CallEnd, contentDescription = null, tint = Color.White)
-                    }
-                }
+                // Vídeo Remoto em Tela Cheia (Fundo)
+                VideoView(
+                    eglBaseContext = eglBaseContext,
+                    onRendererReady = { renderer ->
+                        Log.d("ComunicaDebug", "CommunicationUI: Remote VideoView pronto")
+                        onRemoteRendererReady(renderer)
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                // Vídeo Local (PiP no canto superior direito)
+                VideoView(
+                    eglBaseContext = eglBaseContext,
+                    onRendererReady = { renderer ->
+                        Log.d("ComunicaDebug", "CommunicationUI: Local VideoView pronto")
+                        onLocalRendererReady(renderer)
+                    },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(16.dp)
+                        .size(100.dp, 150.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(1.dp, Color.White.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                )
             }
 
             ChatSection(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxSize(),
                 messages = messages.filter { it.senderId == targetUser.id || it.senderId == myId },
                 myId = myId,
                 myName = myName,
