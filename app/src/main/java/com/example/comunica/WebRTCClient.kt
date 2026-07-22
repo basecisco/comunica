@@ -15,6 +15,7 @@ class WebRTCClient(
     private var remoteVideoTrack: VideoTrack? = null
     private var videoCapturer: CameraVideoCapturer? = null
     private var videoSource: VideoSource? = null
+    private var surfaceTextureHelper: SurfaceTextureHelper? = null
     private var dataChannel: DataChannel? = null
     private var onMessageReceived: ((String) -> Unit)? = null
 
@@ -89,15 +90,17 @@ class WebRTCClient(
         }
 
         videoSource = peerConnectionFactory.createVideoSource(videoCapturer!!.isScreencast)
-        val surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", rootEglBase.eglBaseContext)
+        surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", rootEglBase.eglBaseContext)
         videoCapturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
-        videoCapturer!!.startCapture(1280, 720, 30)
+        videoCapturer!!.startCapture(640, 480, 30)
 
         localVideoTrack = peerConnectionFactory.createVideoTrack("VIDEO_TRACK_ID", videoSource)
+        localVideoTrack?.setEnabled(true)
         android.util.Log.d("ComunicaDebug", "WebRTCClient: localVideoTrack criado. Renderer configurado? ${localRenderer != null}")
         
         localRenderer?.let { 
             android.util.Log.d("ComunicaDebug", "WebRTCClient: Adicionando sink ao localRenderer")
+            if (it is SurfaceViewRenderer) it.setMirror(true)
             localVideoTrack?.addSink(it) 
         }
         
@@ -108,6 +111,10 @@ class WebRTCClient(
     fun setupLocalRenderer(videoSink: VideoSink) {
         android.util.Log.d("ComunicaDebug", "WebRTCClient: setupLocalRenderer chamado")
         localRenderer = videoSink
+        if (localRenderer is SurfaceViewRenderer) {
+            (localRenderer as SurfaceViewRenderer).setMirror(true)
+            (localRenderer as SurfaceViewRenderer).setZOrderMediaOverlay(true)
+        }
         localVideoTrack?.let {
             android.util.Log.d("ComunicaDebug", "WebRTCClient: Vinculando localVideoTrack ao renderer fornecido")
             it.addSink(localRenderer)
@@ -124,8 +131,10 @@ class WebRTCClient(
     }
 
     fun setupRemoteRenderer(videoSink: VideoSink) {
+        android.util.Log.d("ComunicaDebug", "WebRTCClient: setupRemoteRenderer chamado")
         remoteRenderer = videoSink
         remoteVideoTrack?.let {
+            android.util.Log.d("ComunicaDebug", "WebRTCClient: Vinculando remoteVideoTrack ao renderer fornecido")
             it.addSink(remoteRenderer)
         }
     }
@@ -208,11 +217,16 @@ class WebRTCClient(
     }
 
     fun setRemoteDescription(sdp: SessionDescription) {
+        android.util.Log.d("ComunicaDebug", "WebRTCClient: setRemoteDescription tipo ${sdp.type}")
         peerConnection?.setRemoteDescription(object : SdpObserver {
             override fun onCreateSuccess(p0: SessionDescription?) {}
-            override fun onSetSuccess() {}
+            override fun onSetSuccess() {
+                android.util.Log.d("ComunicaDebug", "WebRTCClient: setRemoteDescription SUCESSO")
+            }
             override fun onCreateFailure(p0: String?) {}
-            override fun onSetFailure(p0: String?) {}
+            override fun onSetFailure(error: String?) {
+                android.util.Log.e("ComunicaDebug", "WebRTCClient: setRemoteDescription FALHA: $error")
+            }
         }, sdp)
     }
 
@@ -253,6 +267,9 @@ class WebRTCClient(
 
             videoSource?.dispose()
             videoSource = null
+            
+            surfaceTextureHelper?.dispose()
+            surfaceTextureHelper = null
 
             localVideoTrack?.dispose()
             localVideoTrack = null

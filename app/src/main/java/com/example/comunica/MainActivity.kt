@@ -380,9 +380,11 @@ class MainActivity : ComponentActivity() {
                             webRTCClient?.setSpeakerphoneOn(isOn)
                         },
                         onLocalRendererReady = { renderer ->
+                            Log.d("ComunicaDebug", "MainActivity: onLocalRendererReady chamado, client null? ${webRTCClient == null}")
                             webRTCClient?.setupLocalRenderer(renderer)
                         },
                         onRemoteRendererReady = { renderer ->
+                            Log.d("ComunicaDebug", "MainActivity: onRemoteRendererReady chamado, client null? ${webRTCClient == null}")
                             webRTCClient?.setupRemoteRenderer(renderer)
                         }
                     )
@@ -400,6 +402,7 @@ class MainActivity : ComponentActivity() {
         if (webRTCClient == null) {
             webRTCClient = WebRTCClient(this, object : PeerConnection.Observer {
                 override fun onIceCandidate(candidate: IceCandidate?) {
+                    Log.d("ComunicaDebug", "MainActivity: onIceCandidate gerado localmente")
                     candidate?.let {
                         currentTargetId?.let { target ->
                             val candidateJson = JSONObject().apply {
@@ -419,7 +422,19 @@ class MainActivity : ComponentActivity() {
 
                 override fun onTrack(transceiver: RtpTransceiver?) {
                     val track = transceiver?.receiver?.track()
-                    Log.d("ComunicaDebug", "Track remota recebida: ${track?.kind()}")
+                    val kind = track?.kind() ?: "null"
+                    Log.d("ComunicaDebug", "MainActivity: onTrack recebido! Kind: $kind, Track: $track")
+                    if (track is VideoTrack) {
+                        runOnUiThread {
+                            Log.d("ComunicaDebug", "MainActivity: Vinculando VideoTrack remota ao client")
+                            webRTCClient?.setRemoteVideoTrack(track)
+                        }
+                    }
+                }
+
+                override fun onAddTrack(p0: RtpReceiver?, p1: Array<out MediaStream>?) {
+                    val track = p0?.track()
+                    Log.d("ComunicaDebug", "MainActivity: onAddTrack recebido! Kind: ${track?.kind()}")
                     if (track is VideoTrack) {
                         runOnUiThread {
                             webRTCClient?.setRemoteVideoTrack(track)
@@ -434,7 +449,6 @@ class MainActivity : ComponentActivity() {
                 override fun onAddStream(p0: MediaStream?) {}
                 override fun onRemoveStream(p0: MediaStream?) {}
                 override fun onRenegotiationNeeded() {}
-                override fun onAddTrack(p0: RtpReceiver?, p1: Array<out MediaStream>?) {}
             })
 
             webRTCClient?.setOnMessageReceivedListener { message ->
