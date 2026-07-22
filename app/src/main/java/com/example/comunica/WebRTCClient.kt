@@ -11,8 +11,15 @@ class WebRTCClient(
     private var peerConnectionFactory: PeerConnectionFactory
     private var peerConnection: PeerConnection? = null
     private var localAudioTrack: AudioTrack? = null
+    private var localVideoTrack: VideoTrack? = null
+    private var remoteVideoTrack: VideoTrack? = null
+    private var videoCapturer: CameraVideoCapturer? = null
+    private var videoSource: VideoSource? = null
     private var dataChannel: DataChannel? = null
     private var onMessageReceived: ((String) -> Unit)? = null
+
+    private var localRenderer: VideoSink? = null
+    private var remoteRenderer: VideoSink? = null
 
     init {
         val options = PeerConnectionFactory.InitializationOptions.builder(context)
@@ -49,6 +56,78 @@ class WebRTCClient(
         localAudioTrack?.setEnabled(true)
         peerConnection?.addTrack(localAudioTrack, listOf("ARDAMS"))
         android.util.Log.d("ComunicaDebug", "WebRTC: Track de áudio local adicionada ao PeerConnection.")
+    }
+
+    fun startLocalVideo() {
+        android.util.Log.d("ComunicaDebug", "WebRTCClient: startLocalVideo chamado")
+        if (localVideoTrack != null) {
+            android.util.Log.d("ComunicaDebug", "WebRTCClient: localVideoTrack já existe")
+            return
+        }
+
+        val enumerator = Camera2Enumerator(context)
+        val deviceNames = enumerator.deviceNames
+
+        android.util.Log.d("ComunicaDebug", "WebRTCClient: Câmeras encontradas: ${deviceNames.joinToString()}")
+        // Tenta encontrar a câmera frontal
+        for (deviceName in deviceNames) {
+            if (enumerator.isFrontFacing(deviceName)) {
+                android.util.Log.d("ComunicaDebug", "WebRTCClient: Usando câmera frontal: $deviceName")
+                videoCapturer = enumerator.createCapturer(deviceName, null)
+                break
+            }
+        }
+
+        if (videoCapturer == null && deviceNames.isNotEmpty()) {
+            android.util.Log.d("ComunicaDebug", "WebRTCClient: Câmera frontal não encontrada, usando: ${deviceNames[0]}")
+            videoCapturer = enumerator.createCapturer(deviceNames[0], null)
+        }
+
+        if (videoCapturer == null) {
+            android.util.Log.e("ComunicaDebug", "WebRTCClient: Falha ao criar videoCapturer")
+            return
+        }
+
+        videoSource = peerConnectionFactory.createVideoSource(videoCapturer!!.isScreencast)
+        val surfaceTextureHelper = SurfaceTextureHelper.create("CaptureThread", rootEglBase.eglBaseContext)
+        videoCapturer!!.initialize(surfaceTextureHelper, context, videoSource!!.capturerObserver)
+        videoCapturer!!.startCapture(1280, 720, 30)
+
+        localVideoTrack = peerConnectionFactory.createVideoTrack("VIDEO_TRACK_ID", videoSource)
+        android.util.Log.d("ComunicaDebug", "WebRTCClient: localVideoTrack criado. Renderer configurado? ${localRenderer != null}")
+        
+        localRenderer?.let { 
+            android.util.Log.d("ComunicaDebug", "WebRTCClient: Adicionando sink ao localRenderer")
+            localVideoTrack?.addSink(it) 
+        }
+        
+        peerConnection?.addTrack(localVideoTrack, listOf("ARDAMS"))
+        android.util.Log.d("ComunicaDebug", "WebRTCClient: localVideoTrack adicionado ao PeerConnection")
+    }
+
+    fun setupLocalRenderer(videoSink: VideoSink) {
+        android.util.Log.d("ComunicaDebug", "WebRTCClient: setupLocalRenderer chamado")
+        localRenderer = videoSink
+        localVideoTrack?.let {
+            android.util.Log.d("ComunicaDebug", "WebRTCClient: Vinculando localVideoTrack ao renderer fornecido")
+            it.addSink(localRenderer)
+        }
+    }
+
+    fun setRemoteVideoTrack(track: VideoTrack) {
+        android.util.Log.d("ComunicaDebug", "WebRTCClient: setRemoteVideoTrack chamado")
+        remoteVideoTrack = track
+        remoteRenderer?.let {
+            android.util.Log.d("ComunicaDebug", "WebRTCClient: Vinculando remoteVideoTrack ao renderer fornecido")
+            remoteVideoTrack?.addSink(it)
+        }
+    }
+
+    fun setupRemoteRenderer(videoSink: VideoSink) {
+        remoteRenderer = videoSink
+        remoteVideoTrack?.let {
+            it.addSink(remoteRenderer)
+        }
     }
 
     fun createDataChannel() {
@@ -168,6 +247,18 @@ class WebRTCClient(
 
     fun closeConnection() {
         try {
+            videoCapturer?.stopCapture()
+            videoCapturer?.dispose()
+            videoCapturer = null
+
+            videoSource?.dispose()
+            videoSource = null
+
+            localVideoTrack?.dispose()
+            localVideoTrack = null
+
+            remoteVideoTrack = null
+
             dataChannel?.dispose()
             dataChannel = null
             

@@ -85,6 +85,7 @@ class MainActivity : ComponentActivity() {
     private val incomingCallFromState = mutableStateOf<UserInfo?>(null)
     private var isCallActive by mutableStateOf(false)
     private var remoteOfferSdp: String? = null
+    private var remoteOfferIsVideo: Boolean = false
 
     private var ringtone: Ringtone? = null
     private var toneGenerator: ToneGenerator? = null
@@ -313,6 +314,12 @@ class MainActivity : ComponentActivity() {
                             isCallActive = true
                             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                             notificationManager.cancel(100)
+                            
+                            if (remoteOfferIsVideo) {
+                                Log.d("ComunicaDebug", "MainActivity: Aceitando chamada de VÍDEO, iniciando câmera local")
+                                webRTCClient?.startLocalVideo()
+                            }
+                            
                             val sdp = remoteOfferSdp
                             if (sdp != null) {
                                 currentTargetId = from.id
@@ -323,6 +330,7 @@ class MainActivity : ComponentActivity() {
                             }
                             incomingCallFromState.value = null
                             remoteOfferSdp = null
+                            remoteOfferIsVideo = false
                         },
                         onRejectCall = { from ->
                             stopRingtone()
@@ -333,12 +341,17 @@ class MainActivity : ComponentActivity() {
                             remoteOfferSdp = null
                         },
                         onStartCall = { target, isVideo ->
+                            Log.d("ComunicaDebug", "MainActivity: Iniciando chamada para ${target.name}. Video: $isVideo")
                             startRingbackTone()
                             isCallActive = true
                             if (webRTCClient != null && signalingClient != null) {
+                                if (isVideo) {
+                                    Log.d("ComunicaDebug", "MainActivity: Iniciando câmera local para oferta")
+                                    webRTCClient?.startLocalVideo()
+                                }
                                 currentTargetId = target.id
                                 webRTCClient?.createOffer { offerSdp ->
-                                    signalingClient?.sendOffer(target.id, offerSdp.description)
+                                    signalingClient?.sendOffer(target.id, offerSdp.description, isVideo)
                                 }
                             }
                         },
@@ -365,6 +378,12 @@ class MainActivity : ComponentActivity() {
                         },
                         onToggleSpeakerphone = { isOn ->
                             webRTCClient?.setSpeakerphoneOn(isOn)
+                        },
+                        onLocalRendererReady = { renderer ->
+                            webRTCClient?.setupLocalRenderer(renderer)
+                        },
+                        onRemoteRendererReady = { renderer ->
+                            webRTCClient?.setupRemoteRenderer(renderer)
                         }
                     )
                 }
@@ -399,7 +418,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onTrack(transceiver: RtpTransceiver?) {
-                    Log.d("ComunicaDebug", "Track remota: ${transceiver?.receiver?.track()?.kind()}")
+                    val track = transceiver?.receiver?.track()
+                    Log.d("ComunicaDebug", "Track remota recebida: ${track?.kind()}")
+                    if (track is VideoTrack) {
+                        runOnUiThread {
+                            webRTCClient?.setRemoteVideoTrack(track)
+                        }
+                    }
                 }
                 override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {}
                 override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
@@ -435,11 +460,12 @@ class MainActivity : ComponentActivity() {
                     signalingClient?.joinRoom("sala-padrao", myName, myEmail, myPhotoUri)
                 }
 
-                override fun onOfferReceived(fromId: String, description: String) {
+                override fun onOfferReceived(fromId: String, description: String, isVideo: Boolean) {
                     runOnUiThread {
-                        Log.d("ComunicaDebug", "Signaling: Oferta recebida de: $fromId")
+                        Log.d("ComunicaDebug", "Signaling: Oferta recebida de: $fromId (video: $isVideo)")
                         startRingtone()
                         remoteOfferSdp = description
+                        remoteOfferIsVideo = isVideo
                         val user = onlineUsersState.find { it.id == fromId } ?: UserInfo(fromId, "Usuário " + fromId.take(4), "", "")
                         showIncomingCallNotification(user)
                         incomingCallFromState.value = user
@@ -554,7 +580,9 @@ fun MainScreen(
     onSendMessage: (UserInfo, String) -> Unit,
     onHangup: (UserInfo) -> Unit,
     onSpeechServiceAction: (Boolean) -> Unit,
-    onToggleSpeakerphone: (Boolean) -> Unit
+    onToggleSpeakerphone: (Boolean) -> Unit,
+    onLocalRendererReady: (VideoSink) -> Unit,
+    onRemoteRendererReady: (VideoSink) -> Unit
 ) {
     var hasPermissions by remember { mutableStateOf(false) }
     
@@ -629,7 +657,9 @@ fun MainScreen(
                     onSendMessage = { msg -> onSendMessage(selectedUser, msg) },
                     onHangup = { onHangup(selectedUser) },
                     onToggleListening = onSpeechServiceAction,
-                    onToggleSpeakerphone = onToggleSpeakerphone
+                    onToggleSpeakerphone = onToggleSpeakerphone,
+                    onLocalRendererReady = onLocalRendererReady,
+                    onRemoteRendererReady = onRemoteRendererReady
                 )
             }
         }
@@ -939,10 +969,18 @@ fun CommunicationUI(
     onSendMessage: (String) -> Unit,
     onHangup: () -> Unit,
     onToggleListening: (Boolean) -> Unit,
-    onToggleSpeakerphone: (Boolean) -> Unit
+    onToggleSpeakerphone: (Boolean) -> Unit,
+    onLocalRendererReady: (VideoSink) -> Unit,
+    onRemoteRendererReady: (VideoSink) -> Unit
 ) {
     var isListening by remember { mutableStateOf(false) }
     var isSpeakerphoneOn by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isCallActive) {
+        if (!isCallActive) {
+            isSpeakerphoneOn = false
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -999,9 +1037,21 @@ fun CommunicationUI(
                 Box(modifier = Modifier.fillMaxWidth().height(200.dp).background(Color.Black)) {
                     VideoView(
                         eglBaseContext = eglBaseContext,
+                        onRendererReady = { renderer ->
+                            Log.d("ComunicaDebug", "CommunicationUI: Remote VideoView pronto")
+                            onRemoteRendererReady(renderer)
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    VideoView(
+                        eglBaseContext = eglBaseContext,
+                        onRendererReady = { renderer ->
+                            Log.d("ComunicaDebug", "CommunicationUI: Local VideoView pronto")
+                            onLocalRendererReady(renderer)
+                        },
                         modifier = Modifier.align(Alignment.BottomEnd).size(100.dp, 140.dp).padding(8.dp)
                     )
-                    Text("Chamada com ${targetUser.name}...", color = Color.White, modifier = Modifier.align(Alignment.Center))
+                    Text("Chamada com ${targetUser.name}...", color = Color.White.copy(alpha = 0.7f), modifier = Modifier.align(Alignment.TopCenter).padding(8.dp))
                     IconButton(
                         onClick = { onHangup() },
                         modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp).clip(CircleShape).background(Color.Red)
@@ -1118,7 +1168,11 @@ fun ChatSection(
 }
 
 @Composable
-fun VideoView(eglBaseContext: EglBase.Context?, modifier: Modifier = Modifier) {
+fun VideoView(
+    eglBaseContext: EglBase.Context?,
+    onRendererReady: (SurfaceViewRenderer) -> Unit,
+    modifier: Modifier = Modifier
+) {
     if (LocalInspectionMode.current) {
         Box(modifier = modifier.background(Color.DarkGray, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
             Text("Video", color = Color.White, fontSize = 10.sp)
@@ -1130,6 +1184,7 @@ fun VideoView(eglBaseContext: EglBase.Context?, modifier: Modifier = Modifier) {
                     init(eglBaseContext, null)
                     setEnableHardwareScaler(true)
                     setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                    onRendererReady(this)
                 }
             },
             modifier = modifier.background(Color.DarkGray, RoundedCornerShape(8.dp))
@@ -1163,7 +1218,9 @@ fun MainScreenPreview() {
             onSendMessage = { _, _ -> },
             onHangup = {},
             onSpeechServiceAction = {},
-            onToggleSpeakerphone = {}
+            onToggleSpeakerphone = {},
+            onLocalRendererReady = {},
+            onRemoteRendererReady = {}
         )
     }
 }

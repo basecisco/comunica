@@ -16,7 +16,7 @@ class SignalingClient(
 
     interface SignalingListener {
         fun onConnectionEstablished(myId: String)
-        fun onOfferReceived(from: String, description: String)
+        fun onOfferReceived(fromId: String, description: String, isVideo: Boolean)
         fun onAnswerReceived(from: String, description: String)
         fun onIceCandidateReceived(from: String, candidate: JSONObject)
         fun onUserListUpdated(users: List<UserInfo>)
@@ -36,8 +36,9 @@ class SignalingClient(
             socket?.on("offer") { args ->
                 val data = args[0] as JSONObject
                 val from = data.optString("from")
-                android.util.Log.d("ComunicaDebug", "Socket: Recebeu OFFER de $from")
-                listener.onOfferReceived(from, data.optString("sdp"))
+                val isVideo = data.optBoolean("isVideo", false)
+                android.util.Log.d("ComunicaDebug", "Socket: Recebeu OFFER de $from (video: $isVideo)")
+                listener.onOfferReceived(from, data.optString("sdp"), isVideo)
             }
 
             socket?.on("answer") { args ->
@@ -113,11 +114,12 @@ class SignalingClient(
         socket?.emit("join", data)
     }
 
-    fun sendOffer(targetId: String, sdp: String) {
+    fun sendOffer(targetId: String, sdp: String, isVideo: Boolean) {
         val data = JSONObject().apply {
             put("target", targetId)
             put("from", socket?.id())
             put("sdp", sdp)
+            put("isVideo", isVideo)
         }
         socket?.emit("offer", data)
     }
