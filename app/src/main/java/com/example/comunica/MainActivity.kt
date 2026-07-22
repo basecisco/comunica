@@ -901,7 +901,7 @@ fun UserListScreen(
                                 ) {
                                     Text(
                                         text = unreadCount.toString(),
-                                        color = Color.White,
+                                        color = Color.Black,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold
                                     )
