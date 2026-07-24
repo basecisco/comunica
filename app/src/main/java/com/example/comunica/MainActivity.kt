@@ -52,8 +52,18 @@ import coil.compose.AsyncImage
 import com.example.comunica.ui.theme.ComunicaTheme
 import java.text.SimpleDateFormat
 import java.util.*
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.asRequestBody
 import org.json.JSONObject
 import org.webrtc.*
+import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class MessageStatus { SENT, READ }
 
@@ -89,6 +99,59 @@ class MainActivity : ComponentActivity() {
 
     private var ringtone: Ringtone? = null
     private var toneGenerator: ToneGenerator? = null
+
+    private fun uploadProfilePicture(uriString: String, serverUrl: String, onResult: (String?) -> Unit) {
+        if (!uriString.startsWith("content://")) {
+            onResult(uriString)
+            return
+        }
+
+        val scope = CoroutineScope(Dispatchers.IO)
+        scope.launch {
+            try {
+                val uri = android.net.Uri.parse(uriString)
+                val inputStream: InputStream? = contentResolver.openInputStream(uri)
+                val file = File(cacheDir, "upload_profile.jpg")
+                val outputStream = FileOutputStream(file)
+                inputStream?.copyTo(outputStream)
+                inputStream?.close()
+                outputStream.close()
+
+                val client = OkHttpClient()
+                val requestBody = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart(
+                        "image",
+                        "profile_${System.currentTimeMillis()}.jpg",
+                        file.asRequestBody("image/jpeg".toMediaTypeOrNull())
+                    )
+                    .build()
+
+                val request = Request.Builder()
+                    .url("${serverUrl.trimEnd('/')}/upload")
+                    .post(requestBody)
+                    .build()
+
+                val response = client.newCall(request).execute()
+                if (response.isSuccessful) {
+                    val json = JSONObject(response.body?.string() ?: "{}")
+                    val imageUrl = json.optString("url", null)
+                    withContext(Dispatchers.Main) {
+                        onResult(imageUrl)
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        onResult(null)
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    onResult(null)
+                }
+            }
+        }
+    }
 
     private fun playNotificationSound() {
         try {
@@ -287,27 +350,30 @@ class MainActivity : ComponentActivity() {
                     },
                     onBack = { currentTargetId = null },
                     onUpdateProfile = { name, email, photo, url ->
-                        prefs.edit().apply {
-                            putString("user_name", name)
-                            putString("user_email", email)
-                            putString("user_photo", photo)
-                            putString("server_url", url)
-                            apply()
+                        uploadProfilePicture(photo, url) { uploadedUrl ->
+                            val finalPhoto = uploadedUrl ?: photo
+                            prefs.edit().apply {
+                                putString("user_name", name)
+                                putString("user_email", email)
+                                putString("user_photo", finalPhoto)
+                                putString("server_url", url)
+                                apply()
+                            }
+                            myName = name
+                            myEmail = email
+                            myPhotoUri = finalPhoto
+                            serverUrl = url
+                            
+                            // Reconecta se a URL mudar
+                            if (signalingClient != null) {
+                                signalingClient?.disconnect()
+                                signalingClient = null
+                            }
+                            initWebRTC()
+                            
+                            signalingClient?.joinRoom("sala-padrao", myName, myEmail, myPhotoUri) // Atualiza no servidor
+                            Toast.makeText(this@MainActivity, "Perfil atualizado", Toast.LENGTH_SHORT).show()
                         }
-                        myName = name
-                        myEmail = email
-                        myPhotoUri = photo
-                        serverUrl = url
-                        
-                        // Reconecta se a URL mudar
-                        if (signalingClient != null) {
-                            signalingClient?.disconnect()
-                            signalingClient = null
-                        }
-                        initWebRTC()
-                        
-                        signalingClient?.joinRoom("sala-padrao", myName, myEmail, myPhotoUri) // Atualiza no servidor
-                        Toast.makeText(this@MainActivity, "Perfil atualizado", Toast.LENGTH_SHORT).show()
                     },
                     onAcceptCall = { from ->
                             stopRingtone()
